@@ -1,0 +1,13 @@
+[Unit]
+Description=SyngOS Troubadour: keep Syng's cloud blocked (marker /data/syng-cloud-blocked)
+ConditionPathExists=/data/syng-cloud-blocked
+After=unbound.service network-online.target
+Before=cloudsyncd.service mqttd.service cloudbroker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/syng-cloud-block apply
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

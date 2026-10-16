@@ -1,0 +1,457 @@
+#!/usr/bin/env python3
+# syng-led-reactive — sound-reactive RGBW LED driver for the Syng Cell.
+#
+# Taps the JACK playback mix (what the speaker is playing) via
+#   jack_capture --write-to-stdout   (raw 16-bit LE, no WAV header / no FIFO)
+# does a small FFT in numpy, and drives the 4 PWM channels directly.
+#
+# LED model (reverse-engineered from ledmanager):
+#   pwmchip0 = White, pwmchip1 = Green, pwmchip2 = Red, pwmchip3 = Blue
+#   duty_cycle = period * value   (value 0.0..1.0, linear)
+#
+# ledmanager is stopped while this runs and restarted on exit.
+#
+# Usage:
+#   syng-led-reactive [--mode vu|spectrum|beat|rainbow|pulse|party|flow]
+#                     [--source playback|mic|viz] [--ports "p1,p2"]
+#                     [--fps 60] [--gain 1.0] [--rate 48000] [--period 22767]
+#                     [--viz-port 7249] [--debug] [--no-manage]
+# Ctrl-C to quit (restores ledmanager).
+#
+# --source viz : listen for the Syng VisualizationDataBroadcast feed (msgpack over
+#   UDP) instead of tapping JACK. On grouped speakers the primary's syng-agent fans
+#   this feed out to every cell, so all grouped cells react in sync to the real
+#   audio with NO microphone. The 88-bin spectrum is mapped to the same
+#   bass/mid/treble/overall envelope the JACK path produces, so every mode works.
+# Python 3.7 / numpy compatible.
+
+import argparse, os, select, signal, socket, struct, subprocess, sys, threading, time
+import numpy as np
+
+CHIP = {"W": 0, "G": 1, "R": 2, "B": 3}
+PWMBASE = "/sys/class/pwm/pwmchip{}"
+
+class Pwm:
+    def __init__(self, period):
+        self.period = int(period)
+        for c in CHIP.values():
+            base = PWMBASE.format(c)
+            try:
+                if not os.path.isdir(base + "/pwm0"):
+                    self._w(base + "/export", "0"); time.sleep(0.05)
+                self._w(base + "/pwm0/period", str(self.period))
+                self._w(base + "/pwm0/enable", "1")
+            except OSError as e:
+                sys.stderr.write("pwm chip%d init: %s\n" % (c, e))
+        self._duty = {c: -1 for c in CHIP.values()}
+
+    def _w(self, path, val):
+        with open(path, "w") as f:
+            f.write(val)
+
+    def set_rgbw(self, r, g, b, w):
+        for color, v in (("R", r), ("G", g), ("B", b), ("W", w)):
+            c = CHIP[color]
+            v = 0.0 if v < 0 else (1.0 if v > 1 else v)
+            duty = int(self.period * v + 0.5)
+            if duty != self._duty[c]:
+                try:
+                    self._w(PWMBASE.format(c) + "/pwm0/duty_cycle", str(duty))
+                    self._duty[c] = duty
+                except OSError:
+                    pass
+
+    def off(self):
+        self.set_rgbw(0, 0, 0, 0)
+
+def hsv_to_rgb(h, s, v):
+    i = int(h * 6.0) % 6
+    f = h * 6.0 - int(h * 6.0)
+    p = v * (1 - s); q = v * (1 - s * f); t = v * (1 - s * (1 - f))
+    return [(v,t,p),(q,v,p),(p,v,t),(p,q,v),(t,p,v),(v,p,q)][i]
+
+class Bands:
+    def __init__(self, rate, n, gain):
+        self.rate = rate; self.n = n; self.gain = gain
+        self.win = np.hanning(n).astype(np.float32)
+        self.ring = np.zeros(n, dtype=np.float32)
+        freqs = np.fft.rfftfreq(n, 1.0 / rate)
+        self.bass = freqs < 250
+        self.mid = (freqs >= 250) & (freqs < 2000)
+        self.tre = freqs >= 2000
+        self.env = np.zeros(4, dtype=np.float32)
+        self.agc_band = 1e-3
+        self.agc_rms = 1e-3
+        self.prev_bass = 0.0
+
+    def feed(self, new):
+        k = len(new)
+        if k >= self.n:
+            self.ring = new[-self.n:].astype(np.float32)
+        elif k > 0:
+            self.ring = np.concatenate([self.ring[k:], new.astype(np.float32)])
+        mag = np.abs(np.fft.rfft(self.ring * self.win))
+        rms = float(np.sqrt(np.mean(new ** 2))) if k else 0.0
+        raw = np.array([mag[self.bass].mean() if self.bass.any() else 0,
+                        mag[self.mid].mean() if self.mid.any() else 0,
+                        mag[self.tre].mean() if self.tre.any() else 0,
+                        rms], dtype=np.float32)
+        raw[:3] *= self.gain
+        self.agc_band = max(self.agc_band * 0.999, float(raw[:3].max()), 1e-3)
+        self.agc_rms = max(self.agc_rms * 0.999, float(raw[3]), 1e-3)
+        norm = np.empty(4, dtype=np.float32)
+        norm[:3] = np.clip(raw[:3] / self.agc_band, 0, 1)
+        norm[3] = min(1.0, raw[3] / self.agc_rms)
+        atk, dec = 0.6, 0.12
+        for i in range(4):
+            a = atk if norm[i] > self.env[i] else dec
+            self.env[i] += a * (norm[i] - self.env[i])
+        flux = max(0.0, float(self.env[0]) - self.prev_bass)
+        self.prev_bass = float(self.env[0])
+        return self.env, flux
+
+def _hue_lerp(a, b, t):
+    """Blend hue a->b the short way around the wheel; t in 0..1 (no dip to dark)."""
+    d = ((b - a + 0.5) % 1.0) - 0.5
+    return (a + d * t) % 1.0
+
+def update_color(state, now, flux, cfg):
+    """Evolving base hue with smooth CROSS-FADES (the displayed hue eases toward a
+    target rather than jumping): a silent timed color change fades over
+    `silent_fade` seconds; a beat change fades faster over `beat_fade`. Brightness
+    is the mode's job, so only the hue crossfades here -> no color/dark/color blink.
+    Returns (hue, flash).
+
+    palette=="shared": hue is a pure function of the wall clock, so every
+    clock-synced cell matches; the silent crossfade is computed deterministically
+    in the run-up to each cycle boundary, and beats pop brightness only (hue stays
+    matched). palette=="free" (default): each cell eases its own hue toward a
+    target that steps on the cycle and kicks on beats."""
+    sf = max(0.05, cfg.get("silent_fade", 3.0))
+    bf = max(0.02, cfg.get("beat_fade", 0.35))
+    if cfg.get("palette") == "shared":
+        cyc = cfg["cycle"]
+        epoch = int(now / cyc)
+        base_e = (cfg["drift"] * now + epoch * 0.381966) % 1.0
+        remain = cyc - (now % cyc)
+        if remain < sf:                                       # crossfade into next color
+            nxt = (cfg["drift"] * now + (epoch + 1) * 0.381966) % 1.0
+            bh = _hue_lerp(base_e, nxt, 1.0 - remain / sf)
+        else:
+            bh = base_e
+        flash = state.get("flash", 0.0) * cfg["flash_decay"]
+        if flux > cfg["beat_sens"] and now - state.get("last_beat", 0.0) > cfg["refractory"]:
+            state["last_beat"] = now; flash = 1.0             # brightness pop only (keeps colors matched)
+        state["flash"] = flash
+        return bh, flash
+    import random
+    dt = now - state.get("last_t", now)
+    state["last_t"] = now
+    cur = state.get("cur_hue")
+    if cur is None:
+        cur = random.random(); state["target_hue"] = cur; state["fade_dur"] = sf
+    tgt = (state.get("target_hue", cur) + cfg["drift"] * dt) % 1.0   # target always gently drifts
+    if now >= state.get("next_step", 0.0):                   # timed (silent) color change
+        if state.get("next_step", 0.0) > 0.0:
+            tgt = (tgt + 0.381966) % 1.0                      # golden-angle hop
+            state["fade_dur"] = sf                            # slow, gentle fade
+        state["next_step"] = now + cfg["cycle"] * (0.75 + 0.5 * random.random())
+    flash = state.get("flash", 0.0) * cfg["flash_decay"]
+    if flux > cfg["beat_sens"] and now - state.get("last_beat", 0.0) > cfg["refractory"]:
+        tgt = (tgt + cfg["beat_hue"]) % 1.0                   # color kick on the boom
+        state["fade_dur"] = bf                                # faster fade on the beat
+        state["last_beat"] = now; flash = 1.0
+    cur = _hue_lerp(cur, tgt, min(1.0, dt / state.get("fade_dur", sf)))  # ease hue toward target
+    state["cur_hue"] = cur; state["target_hue"] = tgt; state["flash"] = flash
+    return cur, flash
+
+def render(mode, env, flux, state, now, cfg):
+    bass, mid, tre, overall = [float(v) for v in env]
+    if mode == "vu":
+        return (0, 0, 0, overall)
+    if mode == "spectrum":
+        return (bass, mid, tre, 0)
+    if mode == "rainbow":
+        state["hue"] = (state.get("hue", 0.0) + 0.0015 + overall * 0.01) % 1.0
+        r, g, b = hsv_to_rgb(state["hue"], 1.0, max(0.05, overall))
+        return (r, g, b, 0)
+    if mode == "beat":
+        if flux > cfg["beat_sens"]:
+            state["hue"] = (state.get("hue", 0.0) + 0.14) % 1.0
+            state["flash"] = 1.0
+        state["flash"] = state.get("flash", 0.0) * 0.82
+        r, g, b = hsv_to_rgb(state.get("hue", 0.0), 1.0, state["flash"])
+        return (r, g, b, 0)
+    # --- evolving-color modes ---
+    hue, flash = update_color(state, now, flux, cfg)
+    if mode == "pulse":
+        v = max(cfg["floor"], min(1.0, overall * 0.9 + flash * 0.25))
+        return hsv_to_rgb(hue, 1.0, v) + (0,)
+    if mode == "party":
+        v = max(cfg["floor"], min(1.0, overall))
+        r, g, b = hsv_to_rgb(hue, 1.0, v)
+        return (min(1.0, r + flash * 0.2), min(1.0, g + flash * 0.2),
+                min(1.0, b + flash * 0.2), flash * 0.6)        # white pop on the boom
+    if mode == "flow":
+        v = max(cfg["floor"], min(1.0, 0.22 + bass * 1.0 + flash * 0.2))
+        r, g, b = hsv_to_rgb(hue, 1.0, v)
+        # treble shimmer: a nearby hue at low saturation (NOT the complement, which
+        # would sum with the base toward white under a full-spectrum signal)
+        sh = min(0.35, tre * 0.45)
+        sr, sg, sb = hsv_to_rgb((hue + 0.08) % 1.0, 0.8, sh)
+        return (min(1.0, r + sr), min(1.0, g + sg), min(1.0, b + sb), 0)
+    return (0, 0, 0, 0)
+
+def discover_ports(kind):
+    try:
+        out = subprocess.check_output(["jack_lsp"], stderr=subprocess.DEVNULL).decode()
+    except Exception:
+        return []
+    key = "playback" if kind == "playback" else "capture"
+    return [p for p in out.split() if key in p]
+
+# ---------- viz feed: VisualizationDataBroadcast (msgpack over UDP) ----------
+def _mp(b, i=0):
+    """Minimal MessagePack decoder for the subset the Syng viz feed uses."""
+    c = b[i]; i += 1
+    if c < 0x80: return c, i
+    if c >= 0xe0: return c - 256, i
+    if 0x80 <= c <= 0x8f:
+        d = {}
+        for _ in range(c & 0x0f):
+            k, i = _mp(b, i); v, i = _mp(b, i); d[k] = v
+        return d, i
+    if 0x90 <= c <= 0x9f:
+        a = []
+        for _ in range(c & 0x0f):
+            v, i = _mp(b, i); a.append(v)
+        return a, i
+    if 0xa0 <= c <= 0xbf:
+        n = c & 0x1f; return b[i:i+n].decode("utf-8", "replace"), i + n
+    if c == 0xc0: return None, i
+    if c == 0xc2: return False, i
+    if c == 0xc3: return True, i
+    if c == 0xca: return struct.unpack_from(">f", b, i)[0], i + 4
+    if c == 0xcb: return struct.unpack_from(">d", b, i)[0], i + 8
+    if c == 0xcc: return b[i], i + 1
+    if c == 0xcd: return struct.unpack_from(">H", b, i)[0], i + 2
+    if c == 0xce: return struct.unpack_from(">I", b, i)[0], i + 4
+    if c == 0xd0: return struct.unpack_from(">b", b, i)[0], i + 1
+    if c == 0xd1: return struct.unpack_from(">h", b, i)[0], i + 2
+    if c == 0xd2: return struct.unpack_from(">i", b, i)[0], i + 4
+    if c == 0xd9:
+        n = b[i]; i += 1; return b[i:i+n].decode("utf-8", "replace"), i + n
+    if c == 0xda:
+        n = struct.unpack_from(">H", b, i)[0]; i += 2
+        return b[i:i+n].decode("utf-8", "replace"), i + n
+    if c == 0xdc:
+        n = struct.unpack_from(">H", b, i)[0]; i += 2; a = []
+        for _ in range(n):
+            v, i = _mp(b, i); a.append(v)
+        return a, i
+    if c == 0xdd:
+        n = struct.unpack_from(">I", b, i)[0]; i += 4; a = []
+        for _ in range(n):
+            v, i = _mp(b, i); a.append(v)
+        return a, i
+    if c == 0xde:
+        n = struct.unpack_from(">H", b, i)[0]; i += 2; d = {}
+        for _ in range(n):
+            k, i = _mp(b, i); v, i = _mp(b, i); d[k] = v
+        return d, i
+    return None, i
+
+class VizBands:
+    """Map the VisualizationDataBroadcast spectrum (88 bins, centi-dB) to the same
+    (env[bass,mid,tre,overall], flux) that Bands produces, so render() is reused."""
+    def __init__(self, gain):
+        self.gain = gain
+        self.env = np.zeros(4, dtype=np.float32)
+        self.agc_band = 1e-3; self.agc_rms = 1e-3; self.prev_bass = 0.0
+
+    def feed(self, spec, rms):
+        m = np.power(10.0, (np.array(spec, dtype=np.float32) / 100.0) / 20.0)  # centi-dB -> linear
+        n = len(m)
+        if n < 6:
+            return self.env, 0.0
+        lo = max(2, int(n * 0.12)); mi = int(n * 0.45)
+        bass = float(m[1:lo].mean()); mid = float(m[lo:mi].mean()); tre = float(m[mi:].mean())
+        overall = float(np.power(10.0, (max(rms) / 100.0) / 20.0)) if rms else float(m.mean())
+        raw = np.array([bass, mid, tre, overall], dtype=np.float32)
+        raw[:3] *= self.gain
+        self.agc_band = max(self.agc_band * 0.999, float(raw[:3].max()), 1e-3)
+        self.agc_rms = max(self.agc_rms * 0.999, float(raw[3]), 1e-3)
+        norm = np.empty(4, dtype=np.float32)
+        norm[:3] = np.clip(raw[:3] / self.agc_band, 0, 1)
+        norm[3] = min(1.0, raw[3] / self.agc_rms)
+        atk, dec = 0.6, 0.12
+        for i in range(4):
+            a = atk if norm[i] > self.env[i] else dec
+            self.env[i] += a * (norm[i] - self.env[i])
+        flux = max(0.0, float(self.env[0]) - self.prev_bass)
+        self.prev_bass = float(self.env[0])
+        return self.env, flux
+
+def run_viz(args, cfg):
+    """LED from the Syng viz feed (UDP msgpack). The agent fans the feed to this
+    cell; we just listen, map to env, and render. No JACK, no mic."""
+    if not args.no_manage:
+        subprocess.call(["systemctl", "stop", "ledmanager"])
+    pwm = Pwm(args.period)
+    def cleanup(*_):
+        try: pwm.off()
+        except Exception: pass
+        if not args.no_manage:
+            subprocess.call(["systemctl", "start", "ledmanager"])
+        os._exit(0)
+    signal.signal(signal.SIGINT, cleanup)
+    signal.signal(signal.SIGTERM, cleanup)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("0.0.0.0", args.viz_port))
+    sock.setblocking(False)
+    bands = VizBands(args.gain)
+    state = {}; flux_acc = 0.0; last_pkt = 0.0; last_dbg = 0.0
+    sys.stderr.write("reactive(viz): mode=%s udp=%d — waiting for feed\n" % (args.mode, args.viz_port))
+    tick = 1.0 / 60.0
+    while True:
+        got = False
+        while True:
+            try:
+                data, _ = sock.recvfrom(65535)
+            except (BlockingIOError, OSError):
+                break
+            try:
+                obj, _ = _mp(data, 0)
+                if isinstance(obj, dict) and obj.get("stems"):
+                    spec = obj["stems"][0] if obj.get("stems") else []
+                    _, f = bands.feed(spec, obj.get("stemsRms") or [])
+                    flux_acc = max(flux_acc, f); got = True
+            except Exception:
+                pass
+        now = time.time()
+        if got:
+            last_pkt = now
+        elif now - last_pkt > 0.25:
+            bands.env *= 0.90                      # feed stalled -> fade gently
+        pwm.set_rgbw(*render(args.mode, bands.env, flux_acc, state, now, cfg))
+        flux_acc *= 0.5
+        if args.debug and now - last_dbg > 0.3:
+            last_dbg = now
+            sys.stderr.write("viz bass=%.2f mid=%.2f tre=%.2f ov=%.2f age=%.2fs\r"
+                             % (bands.env[0], bands.env[1], bands.env[2], bands.env[3], now - last_pkt))
+            sys.stderr.flush()
+        time.sleep(tick)
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--mode", default="pulse",
+                    choices=["vu", "spectrum", "beat", "rainbow", "pulse", "party", "flow"])
+    ap.add_argument("--source", default="playback", choices=["playback", "mic", "viz"])
+    ap.add_argument("--viz-port", type=int, default=7249, help="UDP port for the viz feed (--source viz)")
+    ap.add_argument("--ports", default="")
+    ap.add_argument("--fps", type=int, default=60)
+    ap.add_argument("--gain", type=float, default=1.0)
+    ap.add_argument("--rate", type=int, default=48000)
+    ap.add_argument("--period", type=int, default=22767)
+    # evolving-color controls (pulse/party/flow)
+    ap.add_argument("--cycle", type=float, default=20.0, help="seconds between palette steps")
+    ap.add_argument("--beat-sens", type=float, default=0.08, help="bass-boom threshold (lower=touchier)")
+    ap.add_argument("--beat-hue", type=float, default=0.12, help="hue jump per boom (0-1)")
+    ap.add_argument("--floor", type=float, default=0.06, help="minimum brightness so it never goes dark")
+    ap.add_argument("--palette", default="free", choices=["free", "shared"],
+                    help="free=each cell its own color (default); shared=whole group matches one evolving color")
+    ap.add_argument("--silent-fade", type=float, default=3.0,
+                    help="flow/pulse/party: seconds to crossfade to the next color when idle")
+    ap.add_argument("--beat-fade", type=float, default=0.35,
+                    help="flow/pulse/party: seconds to crossfade to the next color on a beat")
+    ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--no-manage", action="store_true")
+    args = ap.parse_args()
+    cfg = {"cycle": args.cycle, "beat_sens": args.beat_sens, "beat_hue": args.beat_hue,
+           "floor": args.floor, "palette": args.palette,
+           "silent_fade": args.silent_fade, "beat_fade": args.beat_fade,
+           "drift": 0.01, "refractory": 0.15, "flash_decay": 0.85}
+
+    if args.source == "viz":
+        return run_viz(args, cfg)
+
+    ports = [p for p in args.ports.split(",") if p] or discover_ports(args.source)
+    if not ports:
+        sys.exit("No JACK %s ports found. Run `jack_lsp` on the Cell and pass --ports a,b"
+                 % args.source)
+    nch = len(ports)
+
+    cmd = ["jack_capture", "--write-to-stdout", "--no-stdin", "--disable-meter",
+           "--channels", str(nch)]
+    for p in ports:
+        cmd += ["--port", p]
+    sys.stderr.write("ports (%d): %s\n" % (nch, ", ".join(ports)))
+    sys.stderr.write("capture: %s\n" % " ".join(cmd))
+
+    if not args.no_manage:
+        subprocess.call(["systemctl", "stop", "ledmanager"])
+
+    cap = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    errbuf = []
+    def drain_err():
+        for line in iter(cap.stderr.readline, b""):
+            errbuf.append(line.decode("utf-8", "replace").rstrip())
+    threading.Thread(target=drain_err, daemon=True).start()
+
+    pwm = [None]
+    def cleanup(*_):
+        try: cap.terminate()
+        except Exception: pass
+        if pwm[0]: pwm[0].off()
+        if not args.no_manage:
+            subprocess.call(["systemctl", "start", "ledmanager"])
+        os._exit(0)
+    signal.signal(signal.SIGINT, cleanup)
+    signal.signal(signal.SIGTERM, cleanup)
+
+    fd = cap.stdout.fileno()
+    frames = max(1, args.rate // args.fps)
+    chunk = frames * nch * 2
+    # watchdog: data must arrive within 5s or we bail with jack_capture's stderr
+    r, _, _ = select.select([fd], [], [], 5.0)
+    if not r:
+        sys.stderr.write("No audio from jack_capture within 5s. Its output:\n  %s\n"
+                         % "\n  ".join(errbuf[-15:] or ["(none)"]))
+        cleanup()
+
+    pwm[0] = Pwm(args.period)
+    bands = Bands(args.rate, 1024, args.gain)
+    state = {}
+    buf = b""
+    last_dbg = 0.0
+    sys.stderr.write("reactive: mode=%s rate=%d ch=%d — running\n"
+                     % (args.mode, args.rate, nch))
+    while True:
+        rr, _, _ = select.select([fd], [], [], 2.0)
+        if not rr:
+            if cap.poll() is not None:
+                sys.stderr.write("jack_capture exited:\n  %s\n" % "\n  ".join(errbuf[-15:]))
+                break
+            continue
+        data = os.read(fd, 65536)
+        if not data:
+            break
+        buf += data
+        while len(buf) >= chunk:
+            block = buf[:chunk]; buf = buf[chunk:]
+            a = np.frombuffer(block, dtype="<i2").astype(np.float32)
+            if nch > 1:
+                a = a.reshape(-1, nch).mean(axis=1)
+            a /= 32768.0
+            env, flux = bands.feed(a)
+            pwm[0].set_rgbw(*render(args.mode, env, flux, state, time.time(), cfg))
+            if args.debug and time.time() - last_dbg > 0.2:
+                last_dbg = time.time()
+                sys.stderr.write("bass=%.2f mid=%.2f tre=%.2f rms=%.2f flux=%.2f\r"
+                                 % (env[0], env[1], env[2], env[3], flux))
+                sys.stderr.flush()
+    cleanup()
+
+if __name__ == "__main__":
+    main()

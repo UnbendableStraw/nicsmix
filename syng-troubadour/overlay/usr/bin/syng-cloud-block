@@ -1,0 +1,25 @@
+#!/bin/sh
+# syng-cloud-block on|off|apply|status — keep the cell off Syng's cloud
+# (DNS NXDOMAIN for syng.space via unbound + reject the last known cloud IPs). `apply` re-installs the
+# block at boot when /data/syng-cloud-blocked exists (syng-cloud-block.service) without restarting anything.
+UC="unbound-control -c /run/unbound/unbound.conf"
+block() {
+  for i in 1 2 3 4 5 6 7 8 9 10; do $UC status >/dev/null 2>&1 && break; sleep 2; done
+  $UC local_zone syng.space always_nxdomain >/dev/null 2>&1
+  $UC flush_zone syng.space >/dev/null 2>&1
+  for ip in $(cat /data/syng-cloud-ips 2>/dev/null); do iptables -C OUTPUT -d $ip -j REJECT 2>/dev/null || iptables -I OUTPUT -d $ip -j REJECT; done
+}
+case "$1" in
+  on)    block; touch /data/syng-cloud-blocked; systemctl restart mqttd cloudsyncd 2>/dev/null; echo "cloud blocked";;
+  apply) [ -f /data/syng-cloud-blocked ] && block && echo "cloud block applied" || echo "not blocked";;
+  off)
+    $UC local_zone_remove syng.space >/dev/null 2>&1
+    for ip in $(cat /data/syng-cloud-ips 2>/dev/null); do while iptables -D OUTPUT -d $ip -j REJECT 2>/dev/null; do :; done; done
+    rm -f /data/syng-cloud-blocked
+    systemctl restart mqttd cloudsyncd 2>/dev/null
+    echo "cloud unblocked";;
+  status)
+    [ -f /data/syng-cloud-blocked ] && echo blocked || echo open
+    $UC list_local_zones 2>/dev/null | grep syng; iptables -S OUTPUT | grep REJECT;;
+  *) echo "usage: $0 on|off|apply|status";;
+esac
