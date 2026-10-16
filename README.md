@@ -1,4 +1,4 @@
-# SyngOS Troubadour — an open mod kit for Syng Cell speakers
+# NicOS Troubledour — an open mod kit for Syng Cell speakers
 
 Keep Syng Cell Alpha speakers useful without Syng's cloud: a flashable firmware mod, a
 self-hosted web UI that runs **on the speakers**, offline room setup/grouping/calibration with
