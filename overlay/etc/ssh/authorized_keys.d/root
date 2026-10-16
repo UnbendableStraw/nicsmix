@@ -1,0 +1,4 @@
+# SSH public keys for root. sshd reads this file through
+#   AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u
+# tools/fw/build-troubadour.sh fills it from $SSH_PUBKEY (or ~/.ssh/id_ed25519.pub) at build time;
+# you can also paste keys here, one per line, before building or after logging in.

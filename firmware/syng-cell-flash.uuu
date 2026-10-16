@@ -1,0 +1,21 @@
+uuu_version 1.2.39
+# Syng Cell (i.MX8M Mini, ROM protocol SDP) full-image flash.
+# Boot handshake copied from uuu's built-in emmc_all for MX8MM:
+#   SDP loads SPL -> board re-enumerates as SDPU (or SDPV) -> load full U-Boot -> jump -> fastboot.
+SDP:  boot -f imx-boot -scanlimited 0x800000
+SDPU: delay 1000
+SDPU: write -f imx-boot -offset 0x57c00
+SDPU: jump -scanlimited 0x800000
+SDPV: delay 1000
+SDPV: write -f imx-boot -skipspl -scanterm -scanlimited 0x800000
+SDPV: jump -scanlimited 0x800000
+# write the entire modified image to eMMC (zero blocks skipped via raw2sparse)
+FB: flash -raw2sparse all image.sdcard
+# establish u-boot env: reset to defaults, pin boot to slot A (p2) + production dtb
+FB: ucmd env default -f -a
+FB: ucmd setenv fdt_file imx8mm-syng-c01mp1-ff.dtb
+FB: ucmd mmc dev 2
+FB: ucmd setenv mmcroot /dev/mmcblk2p2 rootwait rw
+FB: ucmd saveenv
+FB: acmd reset
+FB: done

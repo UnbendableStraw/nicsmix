@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+# Dump the com.syng.* D-Bus API (methods/signals/properties with signatures).
+# Uses python3-dbus (present on the Cell). Avoids busctl's table bug.
+# Writes /tmp/syng-api.txt and prints to stdout.
+import sys, dbus
+from xml.etree import ElementTree as ET
+
+bus = dbus.SystemBus()
+INTRO = "org.freedesktop.DBus.Introspectable"
+SKIP_IFACES = {"org.freedesktop.DBus.Introspectable",
+               "org.freedesktop.DBus.Properties",
+               "org.freedesktop.DBus.Peer",
+               "org.freedesktop.DBus.ObjectManager"}
+
+def introspect(name, path, out, seen):
+    if path in seen:
+        return
+    seen.add(path)
+    try:
+        xml = dbus.Interface(bus.get_object(name, path), INTRO).Introspect()
+    except Exception as e:
+        out.append("  ! %s: %s" % (path, e)); return
+    root = ET.fromstring(xml)
+    for iface in root.findall("interface"):
+        iname = iface.get("name")
+        if iname in SKIP_IFACES:
+            continue
+        members = []
+        for m in iface.findall("method"):
+            ins = "".join(a.get("type","") for a in m.findall("arg") if a.get("direction","in")=="in")
+            outs = "".join(a.get("type","") for a in m.findall("arg") if a.get("direction")=="out")
+            members.append("    method %s(%s)->(%s)" % (m.get("name"), ins, outs))
+        for s in iface.findall("signal"):
+            sig = "".join(a.get("type","") for a in s.findall("arg"))
+            members.append("    signal %s(%s)" % (s.get("name"), sig))
+        for p in iface.findall("property"):
+            members.append("    property %s %s %s" % (p.get("name"), p.get("type"), p.get("access")))
+        if members:
+            out.append("  [%s]  %s" % (path, iname))
+            out.extend(members)
+    for node in root.findall("node"):
+        child = node.get("name")
+        if child:
+            introspect(name, (path.rstrip("/") + "/" + child), out, seen)
+
+def main():
+    names = sorted(n for n in bus.list_names() if "syng" in str(n).lower() and not str(n).startswith(":"))
+    out = ["=== com.syng.* services: %d ===" % len(names)]
+    for n in names:
+        out.append("\n########## %s ##########" % n)
+        introspect(n, "/", out, set())
+    text = "\n".join(out)
+    open("/tmp/syng-api.txt", "w").write(text)
+    print(text)
+    print("\n[written to /tmp/syng-api.txt]", file=sys.stderr)
+
+if __name__ == "__main__":
+    main()

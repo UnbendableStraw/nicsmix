@@ -1,0 +1,48 @@
+#!/bin/bash
+# syng-led — custom LED control for Syng Cell (reverse-engineered from ledmanager)
+# LED model: 4x PWM, RGBW.  pwmchip0=White pwmchip1=Green pwmchip2=Red pwmchip3=Blue
+# duty_cycle = period * value   (value 0.0..1.0, linear; no gamma)
+# Animations: 30 fps, JSON {"rgbw_frames":[[r,g,b,w],...],"metadata":{"oneshot":bool}}
+# D-Bus: service/iface com.syng.Led, object /com/syng/ledmanager
+#   SetColor(i state, a d rgbw)   state 5 = custom color, vector must be length 4
+#   PlayAnimation(s path) PauseAnimation() ResumeAnimation() ClearAnimationQueue()
+set -euo pipefail
+SVC=com.syng.Led; OBJ=/com/syng/ledmanager; IFACE=com.syng.Led
+VIS=/usr/lib/syng/visions
+declare -A CHIP=( [W]=0 [G]=1 [R]=2 [B]=3 )
+
+usage(){ cat <<U
+Usage:
+  syng-led color R G B W        # via ledmanager D-Bus (values 0.0-1.0). e.g. syng-led color 1 0 0 0  (red)
+  syng-led play NAME            # play $VIS/NAME.json
+  syng-led pause|resume|clear
+  syng-led raw R G B W          # DIRECT sysfs (stop ledmanager first: systemctl stop ledmanager)
+  syng-led off                  # all channels off (direct sysfs)
+U
+}
+dbus(){ busctl --system call "$SVC" "$OBJ" "$IFACE" "$@"; }
+
+raw_write(){ # $1=color letter $2=value(0..1)
+  local chip=${CHIP[$1]} val=$2 base per duty
+  base=/sys/class/pwm/pwmchip$chip
+  [ -d "$base/pwm0" ] || echo 0 > "$base/export" 2>/dev/null || true
+  per=$(cat "$base/pwm0/period" 2>/dev/null || echo 22767)
+  [ "$per" -eq 0 ] && { per=22767; echo $per > "$base/pwm0/period"; }
+  duty=$(awk -v p="$per" -v v="$val" 'BEGIN{d=p*v; if(d<0)d=0; if(d>p)d=p; printf "%d", d+0.5}')
+  echo "$duty" > "$base/pwm0/duty_cycle"
+  echo 1 > "$base/pwm0/enable" 2>/dev/null || true
+}
+cmd=${1:-}; shift || true
+case "$cmd" in
+  color) [ $# -eq 4 ] || { usage; exit 1; }
+         dbus SetColor "iad" 5 4 "$1" "$2" "$3" "$4" ;;
+  play)  [ $# -eq 1 ] || { usage; exit 1; }
+         dbus PlayAnimation "s" "$VIS/$1.json" ;;
+  pause) dbus PauseAnimation ;;
+  resume) dbus ResumeAnimation ;;
+  clear) dbus ClearAnimationQueue ;;
+  raw)   [ $# -eq 4 ] || { usage; exit 1; }
+         raw_write R "$1"; raw_write G "$2"; raw_write B "$3"; raw_write W "$4" ;;
+  off)   raw_write R 0; raw_write G 0; raw_write B 0; raw_write W 0 ;;
+  *) usage; exit 1 ;;
+esac
