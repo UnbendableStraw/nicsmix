@@ -1,3 +1,0 @@
-# Environment for syng-agent (edit, then: systemctl restart syng-agent)
-# Port the web UI / REST API listens on (0.0.0.0).
-PORT=8080

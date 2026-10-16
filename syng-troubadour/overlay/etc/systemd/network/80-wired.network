@@ -1,8 +1,0 @@
-# Override of /lib/systemd/network/80-wired.network.
-# Let ConnMan own wired/USB-ethernet interfaces so its PreferredTechnologies
-# (ethernet first) governs routing. systemd-networkd stays hands-off.
-[Match]
-Name=en* eth*
-
-[Link]
-Unmanaged=yes

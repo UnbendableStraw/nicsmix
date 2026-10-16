@@ -1,5 +1,0 @@
-# Args for syng-led-reactive (edit, then: systemctl restart syng-led-reactive)
-# --source viz : real audio feed fanned out by the primary's syng-agent (no mic).
-# --palette free   : each cell evolves its own color (default)
-# --palette shared : whole room matches one evolving color (toggle in the web UI)
-ARGS=--mode flow --source viz --cycle 25 --beat-sens 0.10 --floor 0.07
