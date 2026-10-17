@@ -1,0 +1,74 @@
+{
+ "technologies": {
+  "p2p": {
+   "name": "P2P",
+   "type": "p2p",
+   "powered": false,
+   "connected": false,
+   "tethering": false
+  },
+  "wifi": {
+   "name": "WiFi",
+   "type": "wifi",
+   "powered": true,
+   "connected": true,
+   "tethering": false
+  }
+ },
+ "services": [
+  {
+   "id": "wifi_0000005e0053_41506572747572654c616273_managed_psk",
+   "type": "wifi",
+   "security": "[ psk ]",
+   "state": "online",
+   "strength": "76",
+   "favorite": "True",
+   "autoconnect": "True",
+   "name": "Home Wi-Fi",
+   "ethernet": {
+    "Method": "auto",
+    "Interface": "winfra0",
+    "Address": "8C:47:6E:70:2F:8A",
+    "MTU": "1500"
+   },
+   "ipv4": {
+    "Method": "dhcp",
+    "Address": "192.168.1.226",
+    "Netmask": "255.255.255.0",
+    "Gateway": "192.168.1.1"
+   },
+   "ipv4.configuration": {
+    "Method": "dhcp"
+   },
+   "nameservers": [
+    "1.1.1.1",
+    "8.8.8.8"
+   ],
+   "nameservers.configuration": [],
+   "domains": [],
+   "flags": "*AO"
+  }
+ ],
+ "interfaces": [
+  {
+   "ifname": "winfra0",
+   "ip": "192.168.1.226",
+   "plen": 24,
+   "mac": "00:00:5e:00:53:af"
+  },
+  {
+   "ifname": "usb0",
+   "ip": "10.86.0.1",
+   "plen": 24,
+   "mac": "00:00:5e:00:53:af"
+  },
+  {
+   "ifname": "usb1",
+   "ip": "10.86.1.1",
+   "plen": 24,
+   "mac": "00:00:5e:00:53:af"
+  }
+ ],
+ "default_route": "default via 192.168.1.1 dev winfra0 ",
+ "hostname": "syngDEMOCELL0000KITCH"
+}

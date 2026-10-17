@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="pause" android:enabled="true" android:icon="@drawable/ic_tile" android:shortcutShortLabel="@string/sc_pause">
+        <intent android:action="space.troubadour.PAUSE" android:targetPackage="space.troubadour.app" android:targetClass="space.troubadour.app.MainActivity"/>
+    </shortcut>
+    <shortcut android:shortcutId="mute" android:enabled="true" android:icon="@drawable/ic_tile" android:shortcutShortLabel="@string/sc_mute">
+        <intent android:action="space.troubadour.MUTE" android:targetPackage="space.troubadour.app" android:targetClass="space.troubadour.app.MainActivity"/>
+    </shortcut>
+</shortcuts>

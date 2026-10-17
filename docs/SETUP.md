@@ -21,14 +21,27 @@ cloud. (The dashboard is still at `/`, "setup ›" in its header.)
    calibration state. *Join this room with this speaker* makes this cell a secondary of that
    room; *Create room with this speaker* makes it the primary of a new one (leaving its old room
    first). Cells on stock firmware show as "stock firmware (no agent)" — flash them first.
-3. **ROOM LAYOUT** (when the cell is in a room) — the room map in metres, front of the room up:
-   drag a speaker to move it, drag its tick to turn it, drag the dashed reference circle's
-   centre / edge / ◆ to move, resize, rotate the sound-field circle, ◎ is the listener.
-   *Save layout* pushes it to every member. *Auto circle & listener* recomputes the defaults
-   (listener = centre of the smallest circle around the cells, circle radius = that radius ÷ 0.85 —
-   the rule the cloud used). The table edits the same numbers plus ceiling (upside-down) and
-   height layer, *make primary* (pins the role through celldirector), *remove* (the cell becomes a
-   room of its own). *Rename* renames the room (what AirPlay shows).
+3. **ROOM LAYOUT** (when the cell is in a room) — the app's cell-mapping model: the dashed
+   circle is the **sound-field reference circle**, fixed on screen with the front of the room up,
+   and the speakers sit where they are relative to it. You don't move the speakers to fit the
+   circle, you move the circle to fit the speakers, the way the app's two-finger gesture does:
+   *drag the room* to move the group in the field, *scroll / trackpad-pinch* to grow or shrink it
+   about the cursor, *⌥-drag*, *⇧-scroll* or a two-finger *twist* (Safari trackpads, and any
+   touch screen with two fingers) to rotate it, `↺ 90°` / `↻ 90°` for a quarter turn (the app's
+   rotate button), arrow keys / `+` `−` for nudges. The maths is the app's
+   `RoomMappingGestureRecognizer`: the physical point under each pointer stays under it, so two
+   pointers fully determine centre, radius and rotation. Dragging a **speaker** fine-tunes its
+   position (it snaps to the circle's centre and to its rim — "wall" — like the app's drag session;
+   hold ⇧ to skip), dragging its tick turns it, ◎ is the listener. While you drag, the speakers
+   **play the new circle live** (`/api/room/preview` → cellbroker `reference_circle` override, the
+   same call the app's `ReferenceCircleUpdater` makes) and the layout is **saved when you let go**
+   (`Undo` / ⌘Z steps back). *Identify in turn* plays the orientation sound on each speaker in
+   turn while its dot pulses — the app's round-robin player during this step. *Auto circle &
+   listener* recomputes the defaults (listener = centre of the smallest circle around the cells,
+   circle radius = that radius ÷ 0.85 — the rule the cloud used). The table edits the same numbers
+   plus ceiling (upside-down) and height layer, *make primary* (pins the role through
+   celldirector), *remove* (the cell becomes a room of its own). *Rename* renames the room (what
+   AirPlay shows).
 4. **Soundcheck (calibrate)** — runs the firmware's own `DasCalibrator.Runner.Run()` on the primary:
    round-robin chirps on every cell, ToF/AoA, physical layout estimation, multi-channel room EQ
    and wall detection, all on the speakers (≈ 65–95 s for 6 cells). Room EQ is applied directly to
@@ -41,6 +54,31 @@ cloud. (The dashboard is still at `/`, "setup ›" in its header.)
 5. **Advanced** — block/unblock Syng's cloud on this cell (the block persists across reboots via
    `syng-cloud-block.service`), show the raw room document, restore the state this cell had before
    the agent first changed it.
+
+## A speaker that was never set up (verified on a factory-fresh 2.2.2 flash, b39)
+
+What a fresh Troubadour cell looks like: no `/data/syng/cloud_state.json`, celldirector in its
+`factory` phase (BLE advertising for the Syng app, "Setup not complete"), role `configuring`, the
+agent up on USB (`10.86.0.1`) and on whatever network it has. Three things matter, in this order:
+
+1. **Block the cloud first** if the serial has ever been registered with Syng: within two minutes of
+   getting internet, `authtokend` logs in and `cloudsyncd` pulls the serial's *last known* room from
+   the cloud (an old room name, `configuring`, position 0/0) — a wipe doesn't wipe Syng's memory of
+   the serial. Blocked, it just logs "Could not resolve host" and stays empty.
+2. **Join Wi-Fi** (NETWORK card). A wired-only speaker never takes a room role: celldirector decides
+   "connected" from the Wi-Fi service being connman's online service and otherwise goes into *Wi-Fi
+   repair mode* after 20 s (phase `wifiRepair`, periodic scans, BLE for the app). This is also why the
+   overlay keeps connman's stock `wifi,ethernet` order (b39): with a wired adapter owning the default
+   route the same thing happened to a cell that *was* on Wi-Fi.
+3. **Create or join a room.** A cloudsyncd that never had a base document quietly drops `PatchState`
+   (the agent's call "succeeds" and `GetState` stays `{}`), but it does load `cloud_state.json` at
+   start — so on a fresh cell the agent writes the document there, restarts cloudsyncd, sets the
+   celldirector phase to `placed` *before* restarting celldirector (it reads the phase file only at
+   start, and in `factory` it ignores the room document), and waits for `GetState` to return the
+   room. From there the stock machinery takes over: `Home ID changed`, `Room ID changed`, `CLAIMED
+   ROLE : PRIMARY`, SyFi hostapd up — about 30 s. Joining an existing room is the same path through
+   `/api/room/apply`; the fresh cell was a time-synced, SourceCast-playing secondary of a six-cell
+   room 40 s after the click.
 
 ## More than 5 cells
 
@@ -65,9 +103,16 @@ All JSON over HTTP on port 8080; the setup page uses nothing else.
 | `POST /api/room/join {ip}` | this cell joins the room of the cell at `ip` (asks that room's primary to admit it) |
 | `POST /api/room/admit {cell}` · `/remove {serial}` · `/rename {name}` · `/pin {serial}` | primary-only |
 | `POST /api/room/layout {cells:{serial:{x,y,z,rotation,is_upside_down,height_layer}}, reference_circle, listener_position, auto_circle}` | primary-only |
+| `GET /api/whoami` → `version` | what is really flashed (`/etc/mender/artifact_info`), not the state document's `syng_os_version` (the cloud's last idea) |
+| `GET /api/net` · `POST /api/net/power {tech,on}` · `/api/net/config {service,method,address,netmask,gateway,dns}` | radios and IPv4 per connman service |
+| `GET /api/firmware` · `POST /api/firmware/upload` · `/fetch {ip}` · `/install` · `/rollback` · `/room {action}` | in-place A/B updates — docs/FIRMWARE-UPDATES.md |
+| `POST /api/soundmode {mode: syng|direct}` | Direct = focus 0 on every object (cellbroker fixed-focus override on the primary), room EQ off, bass distribution off, on every member; persistent |
+| `POST /api/room/preview {reference_circle}` | hear a circle before saving it: `source_set_stem_positions` with cellbroker's `reference_circle` override on every active source (primary; relayed to members) |
+| `POST /api/cell/name {serial, name}` | name a speaker (`display_name` in its room-document entry; shown everywhere instead of the serial) |
 | `POST /api/room/leave` | this cell → room of its own |
+| `GET /api/link` · `POST /api/link {mode: syfi\|wired}` | the room's cell-to-cell link: status (wired address, PTP state/offset per member) and switching; primary-only, relayed from secondaries; see `docs/WIRED.md` |
 | `POST /api/room/apply {cell_state, room_state, room_neighbours}` | internal: what the primary fans out to each member (`cloudsyncd.PatchState`) |
-| `POST /api/calibration/run` · `GET /api/calibration/status` | Soundcheck (primary) |
+| `POST /api/calibration/run {runs: 1\|3}` · `GET /api/calibration/status` | Soundcheck (primary); playback paused meanwhile; `runs: 3` combines three passes robustly (status carries `run`/`runs` and `combine` = residual, reference cell, per-pair distance / spread / reciprocity) |
 | `POST /api/calibration/results [..]` | where the patched calibrator posts |
 | `GET /api/wifi` · `/api/wifi/scan` · `POST /api/wifi/connect {ssid,psk}` · `/api/wifi/forget` | connman |
 | `POST /api/cloudblock {on}` · `GET /api/cloudblock` | `syng-cloud-block` |
@@ -82,8 +127,10 @@ All JSON over HTTP on port 8080; the setup page uses nothing else.
 | `GET /api/fleet/live` | SyFi / time sync / Wi-Fi RSSI of every member, asked live |
 | `GET /api/housekeeping` · `POST {action: vacuum_journal | clear_coredumps | restart_service, name}` | disk/RAM hygiene |
 | `GET /api/cloudblock/all` · `POST /api/cloudblock {on, scope:"group"}` | cloud block status / toggle for the room |
+| `GET /api/nowplaying` | the primary's sources / sleep / settings / field in one call — what a secondary's dashboard mirrors; `GET /api/state` on a secondary carries `viaPrimary: <ip>`, and transport/volume/mute/tone/soundfield/spatial/source/sleep/objects/listener POSTs on a secondary are forwarded to the primary (`relayed` in the reply) |
+| `GET /api/scenes` · `/api/scenes/current` · `POST /api/scenes/save {name}` · `/apply {name}` · `/delete` · `/schedule {name, at:"HH:MM", days:[0-6]}` · `/tz {offset}` | scenes |
 
-The primary's agent also runs a **keeper** every 90 s: it refreshes each member's `ip_address`
+Every agent persists cloudsyncd's live document to `/data/syng/cloud_state.json` after each patch and every 90 s (cloudsyncd itself writes it only on cloud fetches — without this a reboot brought back an old room). The primary's agent also runs a **keeper** every 90 s: it refreshes each member's `ip_address` and its SyFi link facts (`syfi_ip`, `syfi_good`, `bssid` — the primary's SourceCast streams to each neighbour's `syfi_ip`, which only the cloud used to fill in; a just-admitted cell is polled every 4 s until its address appears)
 (a DHCP change is picked up and re-fanned-out — seen live when the old primary came back as
 <new-ip>), mirrors the roles celldirector elected into the document, and re-arms the USB link.
 

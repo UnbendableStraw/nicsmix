@@ -1,0 +1,94 @@
+# XcodeGen spec — `brew install xcodegen && xcodegen generate && open Troubadour.xcodeproj`
+name: Troubadour
+options:
+  bundleIdPrefix: space.troubadour
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1,2"
+targets:
+  Troubadour:
+    type: application
+    platform: iOS
+    sources: [Troubadour/Sources]
+    dependencies:
+      - target: TroubadourWidgets
+        embed: true
+    entitlements:
+      path: Troubadour/Troubadour.entitlements
+      properties:
+        com.apple.security.application-groups: [group.space.troubadour]
+    info:
+      path: Troubadour/Info.plist
+      properties:
+        CFBundleDisplayName: Troubadour
+        UIUserInterfaceStyle: Dark
+        NSLocalNetworkUsageDescription: Troubadour finds your Syng Cells on the local network and talks to them directly. Nothing leaves your network.
+        NSBonjourServices: [_syng._tcp, _http._tcp]
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoads: true
+        UILaunchScreen: {}
+        CFBundleURLTypes:
+          - CFBundleURLName: space.troubadour.ios
+            CFBundleURLSchemes: [troubadour]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: space.troubadour.ios
+        DEVELOPMENT_TEAM: ""   # set yours, or pick the team in Xcode's Signing tab
+        CODE_SIGN_STYLE: Automatic
+  TroubadourWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"       # interactive widget buttons
+    sources:
+      - TroubadourWidgets
+      - Troubadour/Sources/Model/Agent.swift
+      - Troubadour/Sources/Model/Shared.swift
+      - Troubadour/Sources/Model/Theme.swift
+    info:
+      path: TroubadourWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Troubadour
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        NSLocalNetworkUsageDescription: The widgets talk to your Syng Cells on the local network.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoads: true
+    entitlements:
+      path: TroubadourWidgets/TroubadourWidgets.entitlements
+      properties:
+        com.apple.security.application-groups: [group.space.troubadour]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: space.troubadour.ios.widgets
+        SKIP_INSTALL: YES
+        CODE_SIGN_STYLE: Automatic
+schemes:
+  Troubadour:                      # the one to run; the widgets ship inside the app
+    build: { targets: { Troubadour: all } }
+    run: { config: Debug }
+  Widget - Sound Field:            # previews a single widget straight from Xcode
+    build: { targets: { TroubadourWidgets: all, Troubadour: all } }
+    run:
+      config: Debug
+      environmentVariables:
+        _XCWidgetKind: space.troubadour.field
+        _XCWidgetFamily: medium
+        _XCWidgetDefaultView: timeline
+  Widget - LEDs:
+    build: { targets: { TroubadourWidgets: all, Troubadour: all } }
+    run:
+      config: Debug
+      environmentVariables:
+        _XCWidgetKind: space.troubadour.led
+        _XCWidgetFamily: medium
+        _XCWidgetDefaultView: timeline

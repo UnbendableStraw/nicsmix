@@ -3,6 +3,18 @@
 # (DNS NXDOMAIN for syng.space via unbound + reject the last known cloud IPs). `apply` re-installs the
 # block at boot when /data/syng-cloud-blocked exists (syng-cloud-block.service) without restarting anything.
 UC="unbound-control -c /run/unbound/unbound.conf"
+HOSTS="api.prod.syng.space mqtt.prod.syng.space updates.prod.syng.space calibration.syng.space"
+learn_ips() {  # while DNS still answers: remember the cloud's addresses so the firewall half of the block has something to reject
+  python3 - $HOSTS <<'PY' 2>/dev/null >> /data/syng-cloud-ips.new
+import socket, sys
+for h in sys.argv[1:]:
+    try:
+        for a in {x[4][0] for x in socket.getaddrinfo(h, 443)}: print(a)
+    except Exception: pass
+PY
+  [ -s /data/syng-cloud-ips.new ] && sort -u /data/syng-cloud-ips /data/syng-cloud-ips.new 2>/dev/null > /data/syng-cloud-ips.tmp && mv -f /data/syng-cloud-ips.tmp /data/syng-cloud-ips
+  rm -f /data/syng-cloud-ips.new
+}
 block() {
   for i in 1 2 3 4 5 6 7 8 9 10; do $UC status >/dev/null 2>&1 && break; sleep 2; done
   $UC local_zone syng.space always_nxdomain >/dev/null 2>&1
@@ -10,13 +22,15 @@ block() {
   for ip in $(cat /data/syng-cloud-ips 2>/dev/null); do iptables -C OUTPUT -d $ip -j REJECT 2>/dev/null || iptables -I OUTPUT -d $ip -j REJECT; done
 }
 case "$1" in
-  on)    block; touch /data/syng-cloud-blocked; systemctl restart mqttd cloudsyncd 2>/dev/null; echo "cloud blocked";;
+  on)    learn_ips; block; touch /data/syng-cloud-blocked
+         systemctl restart mqttd cloudsyncd authtokend logmanager crashreporter 2>/dev/null   # drop live sessions and the cached JWT
+         echo "cloud blocked";;
   apply) [ -f /data/syng-cloud-blocked ] && block && echo "cloud block applied" || echo "not blocked";;
   off)
     $UC local_zone_remove syng.space >/dev/null 2>&1
     for ip in $(cat /data/syng-cloud-ips 2>/dev/null); do while iptables -D OUTPUT -d $ip -j REJECT 2>/dev/null; do :; done; done
     rm -f /data/syng-cloud-blocked
-    systemctl restart mqttd cloudsyncd 2>/dev/null
+    systemctl restart mqttd cloudsyncd authtokend logmanager crashreporter 2>/dev/null
     echo "cloud unblocked";;
   status)
     [ -f /data/syng-cloud-blocked ] && echo blocked || echo open

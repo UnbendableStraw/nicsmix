@@ -1,0 +1,37 @@
+{
+ "reactive": true,
+ "mode": "groove",
+ "palette": "free",
+ "source": "viz",
+ "tune": {
+  "beatSens": "0.05",
+  "floor": "0.02",
+  "cycle": "25",
+  "silentFade": "3.00",
+  "beatFade": "0.42"
+ },
+ "ledmanager": false,
+ "visions": [
+  "BootFinished",
+  "FactoryResetPending",
+  "FactoryResetReleased",
+  "FactoryResetTriggered",
+  "IdentifyCell",
+  "MajorProblem",
+  "MinorProblem",
+  "NicsFixBreathe",
+  "PairSuccess",
+  "PulseRed",
+  "WaitingToPair",
+  "WarmIdle"
+ ],
+ "reactiveModes": [
+  "pulse",
+  "party",
+  "flow",
+  "groove",
+  "spectrum",
+  "vu",
+  "beat"
+ ]
+}

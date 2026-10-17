@@ -1,0 +1,126 @@
+{
+ "Network": {
+  "BSSID": "00:00:5e:00:53:af",
+  "Channel": 153,
+  "RSSI": -41,
+  "hSSID": "8600984777561305754"
+ },
+ "SyFi": {
+  "channel": 11,
+  "connections": [
+   null,
+   {
+    "MAC": "00:00:5e:00:53:af",
+    "RSSI": -36,
+    "rx": 32,
+    "tx": 102447,
+    "txfail": 0
+   },
+   {
+    "MAC": "00:00:5e:00:53:af",
+    "RSSI": -38,
+    "rx": 59,
+    "tx": 363259,
+    "txfail": 5
+   },
+   {
+    "MAC": "00:00:5e:00:53:af",
+    "RSSI": -29,
+    "rx": 785,
+    "tx": 6286549,
+    "txfail": 3
+   },
+   {
+    "MAC": "00:00:5e:00:53:af",
+    "RSSI": -37,
+    "rx": 901,
+    "tx": 7145089,
+    "txfail": 14
+   }
+  ],
+  "num_conn": 4
+ },
+ "AirPlay": {
+  "maxCurrentSkewInFrames": -2.109805372301136,
+  "maxPitchChangeAbsoluteInCents": 0.07609681609904129,
+  "maxPitchChangeInCents": 0.09133706645313465,
+  "maxTargetSkewInFrames": 1.9483890533447266,
+  "numErrors": 0,
+  "numLogMessages": 0,
+  "numUnhandled": 0,
+  "numWarnings": 0
+ },
+ "AC power": {
+  "maxPowerLevel_dB": null,
+  "minPowerLevel_dB": null,
+  "numberOfPowerOffEvents": 0
+ },
+ "SourceCast RX": {
+  "channels": 3,
+  "direction": "receiver",
+  "format": 14,
+  "lastReportTime": 59300585117125,
+  "protocol": "pakUDP",
+  "role": "primary",
+  "sampleRate": 48000,
+  "streams": [
+   {
+    "connected": false,
+    "currentPlaybackPosition": 4068888261,
+    "dropRate": [
+     [
+      -1,
+      0.0
+     ],
+     [
+      10,
+      0.0
+     ],
+     [
+      300,
+      0.0
+     ],
+     [
+      1800,
+      0.0
+     ]
+    ],
+    "newestNetworkPacket": 4068795360,
+    "packetSize": 0,
+    "packetStats": null,
+    "peer": "",
+    "streaming": false,
+    "totalNumSamplesPlayed": 8010752
+   }
+  ]
+ },
+ "SourceCast SyFi": {
+  "algorithm": "cync",
+  "avgSnapshotDelta": [
+   [
+    -1,
+    102390991
+   ],
+   [
+    10,
+    102398694
+   ],
+   [
+    300,
+    102395663
+   ],
+   [
+    1800,
+    102396003
+   ]
+  ],
+  "driverPairReceiveTime": 59301355302125,
+  "lastReportTime": 59301401959375,
+  "localToRemoteRateDifference": 2.7193309167605205e-05,
+  "preferredAlgorithm": "cync",
+  "timestampPair": {
+   "local": 59301354867125,
+   "remote": 59066265989000
+  }
+ }
+}

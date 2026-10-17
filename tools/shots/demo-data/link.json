@@ -1,0 +1,86 @@
+{
+ "mode": "syfi",
+ "wired": null,
+ "timesync": "cync",
+ "timesync_iface": "wsyng0",
+ "ptp": {
+  "active": false,
+  "state": null,
+  "offset_ns": null,
+  "path_delay_ns": null,
+  "master": null
+ },
+ "busy": null,
+ "log": [],
+ "last": null,
+ "time_sync_good": true,
+ "members": [
+  {
+   "serial": "DEMOCELL0000KITCH",
+   "name": "Kitchen",
+   "ip": "192.168.1.226",
+   "role": "primary",
+   "wired_ip": null,
+   "wired_if": null,
+   "syfi_ip": "fe80::1234:5678:9abc:2f8a",
+   "ptp": {
+    "active": false,
+    "state": null,
+    "offset_ns": null,
+    "path_delay_ns": null,
+    "master": null
+   },
+   "time_sync_good": true,
+   "link_mode": "syfi",
+   "isMe": true
+  },
+  {
+   "serial": "DEMOCELL0000WINDW",
+   "name": "Window",
+   "ip": "192.168.1.138",
+   "role": "secondary",
+   "wired_ip": null,
+   "wired_if": null,
+   "syfi_ip": "fe80::1234:5678:9abc:263e",
+   "ptp": null,
+   "time_sync_good": true,
+   "link_mode": "syfi"
+  },
+  {
+   "serial": "DEMOCELL0000COUCH",
+   "name": "Couch",
+   "ip": "192.168.1.30",
+   "role": "secondary",
+   "wired_ip": null,
+   "wired_if": null,
+   "syfi_ip": "fe80::1234:5678:9abc:2af6",
+   "ptp": null,
+   "time_sync_good": true,
+   "link_mode": "syfi"
+  },
+  {
+   "serial": "DEMOCELL0000DESK1",
+   "name": "Desk",
+   "ip": "192.168.1.192",
+   "role": "secondary",
+   "wired_ip": "192.168.1.174",
+   "wired_if": "eth0",
+   "syfi_ip": "fe80::1234:5678:9abc:2704",
+   "ptp": null,
+   "time_sync_good": true,
+   "link_mode": "syfi"
+  },
+  {
+   "serial": "DEMOCELL0000HALL1",
+   "name": "Hallway",
+   "ip": "192.168.1.44",
+   "role": "secondary",
+   "wired_ip": null,
+   "wired_if": null,
+   "syfi_ip": "fe80::1234:5678:9abc:2550",
+   "ptp": null,
+   "time_sync_good": true,
+   "link_mode": "syfi"
+  }
+ ]
+}

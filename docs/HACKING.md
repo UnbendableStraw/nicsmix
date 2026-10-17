@@ -27,3 +27,23 @@ Roll back on a cell: `cp -f /usr/bin/syng-agent.prev.bak /usr/bin/syng-agent && 
 - udhcpd on the USB gadget interfaces: one instance per interface; the agent re-arms them every 90 s because a connman restart drops the addresses.
 - Soundcheck results vary ~0.3 m between quiet runs and ~1 m with music playing; recalibrations are aligned to the previous layout, so run it quiet.
 - Nothing here raises the volume above what the user set or resets a cell; keep it that way (`set_volume` is clamped 0–1, the volume-limit guard only lowers).
+
+## Theme and typeface
+
+The pages carry the Syng app's look (b43): colours are CSS variables on `:root` in both page templates
+(`--bg --surface --surface2 --line --text --muted --accent --accent-ink --live --warn --bad`), dark by
+default, with a light set under `:root[data-theme=light]` and `prefers-color-scheme`. The app's typeface
+is Graphik; put `Graphik-Regular-App.ttf`, `-Medium-`, `-Semibold-`, `-Bold-` into `/data/syng-agent/fonts/`
+on a cell (they're in the app bundle under `syng-ui_SyngUI.bundle/`) and the agent serves them at
+`/fonts/<name>`; without them the system font is used. The font files are licensed and not part of this
+repository.
+
+## Debugging "one speaker is silent"
+
+On the cell, `jack_lsp -c` shows the graph and `jack_meter -n -f 4 <port>` the level: `airplay2:out0` (or the source's
+ports) is what comes in, `syngsoundserver:system_out_1..3` is what the spatialiser renders for *this* cell's three
+drivers (secondaries receive audio inside jackd's ALSA plugin instead, so their `system_out` ports read −∞ even while
+playing). In at −40 dBFS and out at −∞ means the render for this cell is zero: check the Direct/Syng state (focus
+override, room EQ, **bass distribution — off zeroes the primary's own output**, listener-offset compensation) before
+suspecting the DAC; `POST /api/ping {serial}` through `system_out` proves the output path. A listener marker sitting
+on top of a speaker also pulls that speaker down several dB through the offset compensation.

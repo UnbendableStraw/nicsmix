@@ -1,0 +1,180 @@
+{
+ "room_state": {
+  "listener_position": {
+   "version": "feb6e36b-4f8f-49cf-b9b6-17c2bcb3eb53",
+   "x_m": 2.013686506733743,
+   "y_m": 1.2239302763931568
+  },
+  "place_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "reference_circle": {
+   "radius_m": 2.7416115537771395,
+   "rotation_deg": 2.396223750254217,
+   "version": "c63de932-e709-46e1-8438-a8ef21113c71",
+   "x_m": 2.0203093483768164,
+   "y_m": 1.2145324041932457
+  },
+  "room_id": "11111111-2222-3333-4444-555555555555",
+  "room_name": "Ball Room",
+  "tone_control": {
+   "bass": -0.09999999999999998,
+   "mapping_version": "1.0.0",
+   "tilt": 0.0,
+   "version": "DB95301B-0FF7-4EE5-8472-B4CFE7516574"
+  },
+  "version": "afd2cd0c-cbe9-45d7-a0ac-8ce5cfda408c"
+ },
+ "cells": [
+  {
+   "serial": "DEMOCELL0000KITCH",
+   "name": "Kitchen",
+   "ip": "192.168.1.226",
+   "role": "primary",
+   "online": true,
+   "calibrated": true,
+   "position": {
+    "rotation": -3.197754702784922,
+    "x": 1.8938124936245335,
+    "y": 1.2110086512345006,
+    "z": 1.5
+   },
+   "nearby_walls": [
+    {
+     "angle_deg": -135.0,
+     "close_to_wall": true,
+     "distance_m": 0.5,
+     "likelihood": 0.4275630014079601
+    }
+   ],
+   "is_upside_down": true,
+   "height_layer": 0.0,
+   "model": "C01_MP1",
+   "version": "Troubadour-2.2.2",
+   "isMe": true,
+   "role_pinned": false
+  },
+  {
+   "serial": "DEMOCELL0000WINDW",
+   "name": "Window",
+   "ip": "192.168.1.138",
+   "role": "secondary",
+   "online": true,
+   "calibrated": true,
+   "position": {
+    "rotation": 92.311759439675,
+    "x": 0.48148855437700677,
+    "y": 2.503041759021049,
+    "z": 1.5
+   },
+   "nearby_walls": [
+    {
+     "angle_deg": 20.0,
+     "close_to_wall": true,
+     "distance_m": 0.5,
+     "likelihood": 0.22366192634837279
+    }
+   ],
+   "is_upside_down": true,
+   "height_layer": 0.0,
+   "model": "C01_MP1",
+   "version": "Troubadour-2.2.1",
+   "isMe": false,
+   "role_pinned": false
+  },
+  {
+   "serial": "DEMOCELL0000COUCH",
+   "name": "Couch",
+   "ip": "192.168.1.30",
+   "role": "secondary",
+   "online": true,
+   "calibrated": true,
+   "position": {
+    "rotation": -43.49052853702312,
+    "x": 3.8536912173401237,
+    "y": 2.6539673969690307,
+    "z": 1.5
+   },
+   "nearby_walls": [
+    {
+     "angle_deg": -133.0,
+     "close_to_wall": true,
+     "distance_m": 0.5,
+     "likelihood": 0.3724014291595953
+    }
+   ],
+   "is_upside_down": true,
+   "height_layer": 0.0,
+   "model": "C01_MP1",
+   "version": "Troubadour-2.2.1",
+   "isMe": false,
+   "role_pinned": false
+  },
+  {
+   "serial": "DEMOCELL0000DESK1",
+   "name": "Desk",
+   "ip": "192.168.1.192",
+   "role": "secondary",
+   "online": true,
+   "calibrated": true,
+   "position": {
+    "rotation": -25.29132309605667,
+    "x": 3.8972141029624385,
+    "y": -0.14827499087685292,
+    "z": 1.5
+   },
+   "nearby_walls": [
+    {
+     "angle_deg": -178.0,
+     "close_to_wall": true,
+     "distance_m": 0.5,
+     "likelihood": 0.9999999993861275
+    }
+   ],
+   "is_upside_down": true,
+   "height_layer": 0.0,
+   "model": "C01_MP1",
+   "version": "Troubadour-2.2.1",
+   "isMe": false,
+   "role_pinned": false
+  },
+  {
+   "serial": "DEMOCELL0000HALL1",
+   "name": "Hallway",
+   "ip": "192.168.1.44",
+   "role": "secondary",
+   "online": true,
+   "calibrated": true,
+   "position": {
+    "rotation": -85.2782545926867,
+    "x": 0.03199890686729737,
+    "y": -0.002258027993316675,
+    "z": 1.5
+   },
+   "nearby_walls": [
+    {
+     "angle_deg": -47.0,
+     "close_to_wall": false,
+     "distance_m": 0.5,
+     "likelihood": 0.15552681111850125
+    }
+   ],
+   "is_upside_down": true,
+   "height_layer": 0.0,
+   "model": "C01_MP1",
+   "version": "Troubadour-2.2.1",
+   "isMe": false,
+   "role_pinned": false
+  }
+ ],
+ "me": "DEMOCELL0000KITCH",
+ "primary_ip": "192.168.1.226",
+ "i_am_primary": true,
+ "calibration": {
+  "running": false,
+  "started": null,
+  "finished": null,
+  "ok": null,
+  "log": [],
+  "last_results": null
+ },
+ "cloud_blocked": true
+}

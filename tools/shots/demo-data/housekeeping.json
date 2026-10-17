@@ -1,0 +1,80 @@
+{
+ "journal_bytes": 125829120,
+ "coredumps": [],
+ "coredump_bytes": 0,
+ "top": [
+  {
+   "rss_kb": 108532,
+   "elapsed": "16:27:55",
+   "name": "jackd"
+  },
+  {
+   "rss_kb": 65020,
+   "elapsed": "03:43:42",
+   "name": "airplay2source"
+  },
+  {
+   "rss_kb": 49316,
+   "elapsed": "03:43:42",
+   "name": "tidalsource"
+  },
+  {
+   "rss_kb": 43300,
+   "elapsed": "03:02:43",
+   "name": "python3"
+  },
+  {
+   "rss_kb": 42536,
+   "elapsed": "03:43:42",
+   "name": "spotifysource"
+  },
+  {
+   "rss_kb": 41284,
+   "elapsed": "16:27:55",
+   "name": "python3"
+  },
+  {
+   "rss_kb": 39784,
+   "elapsed": "03:43:43",
+   "name": "syngsoundserver"
+  }
+ ],
+ "data": {
+  "total": 3213993984,
+  "free": 2788185088
+ },
+ "tmp": [
+  {
+   "path": "/data/firmware",
+   "bytes": 278036480
+  },
+  {
+   "path": "/data/log",
+   "bytes": 142653440
+  },
+  {
+   "path": "/data/syng-agent",
+   "bytes": 751616
+  },
+  {
+   "path": "/data/syng",
+   "bytes": 43008
+  },
+  {
+   "path": "/data/home",
+   "bytes": 20480
+  },
+  {
+   "path": "/data/cloud_state_patch.json",
+   "bytes": 15360
+  },
+  {
+   "path": "/data/lost+found",
+   "bytes": 12288
+  },
+  {
+   "path": "/data/connman",
+   "bytes": 8192
+  }
+ ]
+}

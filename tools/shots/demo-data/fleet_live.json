@@ -1,0 +1,69 @@
+{
+ "cells": [
+  {
+   "serial": "DEMOCELL0000KITCH",
+   "ip": "192.168.1.226",
+   "role": "primary",
+   "syfi": true,
+   "sync": true,
+   "ssid": "Home Wi-Fi",
+   "rssi": -41,
+   "agent": "b51",
+   "isMe": true,
+   "ok": true,
+   "name": "Kitchen"
+  },
+  {
+   "serial": "DEMOCELL0000WINDW",
+   "ip": "192.168.1.138",
+   "role": "secondary",
+   "syfi": true,
+   "sync": true,
+   "ssid": "Home Wi-Fi",
+   "rssi": -42,
+   "agent": "b51",
+   "isMe": false,
+   "ok": true,
+   "name": "Window"
+  },
+  {
+   "serial": "DEMOCELL0000HALL1",
+   "ip": "192.168.1.44",
+   "role": "secondary",
+   "syfi": true,
+   "sync": true,
+   "ssid": "Home Wi-Fi",
+   "rssi": -43,
+   "agent": "b51",
+   "isMe": false,
+   "ok": true,
+   "name": "Hallway"
+  },
+  {
+   "serial": "DEMOCELL0000DESK1",
+   "ip": "192.168.1.192",
+   "role": "secondary",
+   "syfi": true,
+   "sync": true,
+   "ssid": "Home Wi-Fi",
+   "rssi": -33,
+   "agent": "b51",
+   "isMe": false,
+   "ok": true,
+   "name": "Desk"
+  },
+  {
+   "serial": "DEMOCELL0000COUCH",
+   "ip": "192.168.1.30",
+   "role": "secondary",
+   "syfi": true,
+   "sync": true,
+   "ssid": "Home Wi-Fi",
+   "rssi": -42,
+   "agent": "b51",
+   "isMe": false,
+   "ok": true,
+   "name": "Couch"
+  }
+ ]
+}

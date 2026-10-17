@@ -1,0 +1,101 @@
+{
+ "scenes": {
+  "Movie night": {
+   "volume": 0.42,
+   "tone": {
+    "bass": 0.15,
+    "tilt": -0.05
+   },
+   "field": {
+    "ux": 0.0,
+    "uy": -0.2,
+    "rot": 335.7,
+    "width": 70.6,
+    "radius": 0.0,
+    "spatial": false,
+    "snap": ""
+   },
+   "led": {
+    "mode": "off",
+    "palette": "free"
+   },
+   "spatial": {
+    "height": true,
+    "beyond": false
+   },
+   "sound_mode": "syng",
+   "volume_limit": 0,
+   "source": "airplay2"
+  },
+  "Dinner": {
+   "volume": 0.18,
+   "tone": {
+    "bass": 0.0,
+    "tilt": 0.0
+   },
+   "field": {
+    "ux": 0.0,
+    "uy": 0.0,
+    "rot": 335.7,
+    "width": 95.0,
+    "radius": 0.7,
+    "spatial": true,
+    "snap": ""
+   },
+   "led": {
+    "mode": "flow",
+    "palette": "shared"
+   },
+   "spatial": {
+    "height": false,
+    "beyond": true
+   },
+   "sound_mode": "direct",
+   "volume_limit": 0,
+   "source": "airplay2"
+  },
+  "Party": {
+   "volume": 0.62,
+   "tone": {
+    "bass": 0.25,
+    "tilt": 0.1
+   },
+   "field": {
+    "ux": 0.0,
+    "uy": 0.0,
+    "rot": 0.0,
+    "width": 180.0,
+    "radius": 0.9,
+    "spatial": true,
+    "snap": ""
+   },
+   "led": {
+    "mode": "party",
+    "palette": "shared"
+   },
+   "spatial": {
+    "height": true,
+    "beyond": true
+   },
+   "sound_mode": "direct",
+   "volume_limit": 0,
+   "source": "spotify"
+  }
+ },
+ "last": "Dinner",
+ "schedule": [
+  {
+   "name": "Dinner",
+   "days": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   "time": "18:30",
+   "on": true
+  }
+ ],
+ "tz_offset_min": 420
+}

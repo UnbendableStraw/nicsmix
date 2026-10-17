@@ -1,0 +1,39 @@
+{
+ "cells": [
+  {
+   "serial": "DEMOCELL0000KITCH",
+   "ip": "192.168.1.226",
+   "blocked": true,
+   "isMe": true,
+   "name": "Kitchen"
+  },
+  {
+   "serial": "DEMOCELL0000WINDW",
+   "ip": "192.168.1.138",
+   "blocked": true,
+   "isMe": false,
+   "name": "Window"
+  },
+  {
+   "serial": "DEMOCELL0000DESK1",
+   "ip": "192.168.1.192",
+   "blocked": true,
+   "isMe": false,
+   "name": "Desk"
+  },
+  {
+   "serial": "DEMOCELL0000COUCH",
+   "ip": "192.168.1.30",
+   "blocked": true,
+   "isMe": false,
+   "name": "Couch"
+  },
+  {
+   "serial": "DEMOCELL0000HALL1",
+   "ip": "192.168.1.44",
+   "blocked": true,
+   "isMe": false,
+   "name": "Hallway"
+  }
+ ]
+}

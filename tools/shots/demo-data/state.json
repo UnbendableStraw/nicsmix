@@ -1,0 +1,355 @@
+{
+ "core": {
+  "buildName": "Troubadour-2.2.2",
+  "cellIsUpsideDown": true,
+  "cellPosition": {
+   "angle": 0.0,
+   "height_layer": 0.0,
+   "is_upside_down": false,
+   "x": 0.0,
+   "y": 0.0,
+   "z": 0.0
+  },
+  "hardwareModel": "C01_MP1",
+  "homeID": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "hostname": "syngDEMOCELL0000KITCH",
+  "infraBSSID": "00:00:5e:00:53:af",
+  "infraChannel": 153,
+  "infraIP": "192.168.1.226",
+  "infraSSID": "Home Wi-Fi",
+  "listenerPosition": {
+   "x": 0.0,
+   "y": 0.0
+  },
+  "role": "primary",
+  "roleAcqTime": 1792218333,
+  "rolePinned": false,
+  "roomID": "11111111-2222-3333-4444-555555555555",
+  "roomName": "Ball Room",
+  "syfiGood": true,
+  "syfiIP": "fe80::1234:5678:9abc:def0",
+  "syfiPass": "demo-passphrase",
+  "syfiSSID": "syfi-c87b173c-7b6a-494d-875d",
+  "timeSyncGood": true,
+  "uniqueID": "DEMOCELL0000KITCH"
+ },
+ "sensors": {
+  "temps": {
+   "CPU_Temperature": 74.0,
+   "PMIC_Temperature": 66.718,
+   "PSAB_MLB_Connector_Temperature": 59.078,
+   "PSAB_Woofer2_Amplifier_Temperature": 64.054,
+   "SoC_Temperature": 66.789,
+   "Wireless_Module_Temperature": 65.132,
+   "eMMC_Temperature": 65.445
+  },
+  "faults": {
+   "SPK_FAULT cnt": 0
+  },
+  "accel": {
+   "X_ACCELERATION_G": 0.039528001099824905,
+   "Y_ACCELERATION_G": 0.0036600001621991396,
+   "Z_ACCELERATION_G": 1.024067997932434
+  },
+  "mmc": {
+   "avg P/E cnt ALL": 34,
+   "avg P/E cnt MLC": 31,
+   "avg P/E cnt pSLC": 95,
+   "eMMC Life Time Estimation A": 1,
+   "eMMC Life Time Estimation B": 1,
+   "eMMC PRE EOL Info": 1,
+   "init BB": 15,
+   "later BB": 0,
+   "spare blocks": 88,
+   "sum P/E cnt ALL": 34872,
+   "sum P/E cnt MLC": 30770,
+   "sum P/E cnt pSLC": 4102
+  }
+ },
+ "cloudOnline": false,
+ "sources": {
+  "airplay2": {
+   "active": true,
+   "volume": 0.16361490885416666,
+   "tone": {
+    "bass": -0.09999999999999998,
+    "tilt": 0.0,
+    "version": "DB95301B-0FF7-4EE5-8472-B4CFE7516574",
+    "mapping_version": "1.0.0"
+   },
+   "title": "Demo Track",
+   "artist": "Demo Artist",
+   "album": "",
+   "duration": 400.666,
+   "position": 371.824875,
+   "playing": true,
+   "shuffling": false,
+   "repeatMode": 0,
+   "controls": [
+    "pause",
+    "next",
+    "previous"
+   ],
+   "music": true,
+   "displayName": "AirPlay",
+   "artwork": false,
+   "mixType": "mix",
+   "mediaType": "music",
+   "badging": "Stereo",
+   "layout": "L R",
+   "state": "producing",
+   "mute": false,
+   "height": false,
+   "beyond": false
+  },
+  "tidal": {
+   "active": false,
+   "volume": 0.3,
+   "tone": {
+    "bass": -0.09999999999999998,
+    "tilt": 0.0,
+    "version": "DB95301B-0FF7-4EE5-8472-B4CFE7516574",
+    "mapping_version": "1.0.0"
+   },
+   "title": null,
+   "artist": null,
+   "album": null,
+   "duration": null,
+   "position": null,
+   "playing": null,
+   "shuffling": null,
+   "repeatMode": null,
+   "controls": [],
+   "music": true,
+   "displayName": "TIDAL",
+   "artwork": false,
+   "mixType": "mix",
+   "mediaType": "music",
+   "badging": "",
+   "layout": "L R",
+   "state": "disconnected",
+   "mute": false,
+   "height": false,
+   "beyond": false
+  },
+  "spotify": {
+   "active": false,
+   "volume": 0.3,
+   "tone": {
+    "bass": -0.09999999999999998,
+    "tilt": 0.0,
+    "version": "DB95301B-0FF7-4EE5-8472-B4CFE7516574",
+    "mapping_version": "1.0.0"
+   },
+   "title": null,
+   "artist": null,
+   "album": null,
+   "duration": null,
+   "position": null,
+   "playing": null,
+   "shuffling": null,
+   "repeatMode": null,
+   "controls": [],
+   "music": true,
+   "displayName": "Spotify",
+   "artwork": false,
+   "mixType": "mix",
+   "mediaType": "music",
+   "badging": "",
+   "layout": "L R",
+   "state": "disconnected",
+   "mute": false,
+   "height": false,
+   "beyond": false
+  },
+  "CalibrationClient": {
+   "active": false,
+   "volume": 0.3,
+   "tone": {
+    "bass": -0.09999999999999998,
+    "tilt": 0.0,
+    "version": "DB95301B-0FF7-4EE5-8472-B4CFE7516574",
+    "mapping_version": "1.0.0"
+   },
+   "title": null,
+   "artist": null,
+   "album": null,
+   "duration": null,
+   "position": null,
+   "playing": null,
+   "shuffling": null,
+   "repeatMode": null,
+   "controls": [],
+   "music": false,
+   "displayName": "CalibrationStimulusSource",
+   "artwork": false,
+   "mixType": "exclusive",
+   "mediaType": "calibrationTone",
+   "badging": "",
+   "layout": "C",
+   "state": "disconnected",
+   "mute": false,
+   "height": false,
+   "beyond": false
+  }
+ },
+ "system": {
+  "cpuPct": 61.2,
+  "mem": {
+   "usedPct": 64.8,
+   "usedMB": 614,
+   "totalMB": 948
+  },
+  "load": 3.38,
+  "diskData": 13.2,
+  "diskRoot": 42.5,
+  "uptime": 59306
+ },
+ "calibration": {
+  "ready": true,
+  "noiseRMS": 53.9,
+  "noiseLongTerm": 57.8
+ },
+ "sleep": {
+  "until": null,
+  "fade_s": 30,
+  "started": null,
+  "state": "off",
+  "now": 1792277403.0840204
+ },
+ "settings": {
+  "volume_limit": 0,
+  "sound_mode": "direct",
+  "link_mode": "syfi",
+  "scenes": {},
+  "tz_offset_min": 420.0
+ },
+ "bass": {
+  "disabledCells": "[]",
+  "enable": true,
+  "normParam": 1.4142135381698608
+ },
+ "room": {
+  "name": "Ball Room",
+  "tone": {
+   "bass": -0.09999999999999998,
+   "mapping_version": "1.0.0",
+   "tilt": 0.0,
+   "version": "DB95301B-0FF7-4EE5-8472-B4CFE7516574"
+  },
+  "listener": {
+   "x_m": 2.013686506733743,
+   "y_m": 1.2239302763931568
+  },
+  "reference": {
+   "radius_m": 2.7416115537771395,
+   "rotation_deg": 2.396223750254217,
+   "version": "c63de932-e709-46e1-8438-a8ef21113c71",
+   "x_m": 2.0203093483768164,
+   "y_m": 1.2145324041932457
+  },
+  "field": {
+   "ux": 0.0,
+   "uy": 0.0,
+   "rot": 90.7,
+   "width": 108.7,
+   "radius": 0.7,
+   "spatial": true,
+   "snap": "",
+   "version": "3A6B2ADF-A448-4A16-A2F9-1B4C00AA46B8"
+  },
+  "sound": {
+   "x_m": 2.014,
+   "y_m": 1.224,
+   "focus": 0.8,
+   "rot": 0.0
+  }
+ },
+ "fleet": [
+  {
+   "serial": "DEMOCELL0000KITCH",
+   "name": "Kitchen",
+   "role": "primary",
+   "ip": "192.168.1.226",
+   "online": true,
+   "calibrated": true,
+   "model": "C01_MP1",
+   "position": {
+    "rotation": -3.197754702784922,
+    "x": 1.8938124936245335,
+    "y": 1.2110086512345006,
+    "z": 1.5
+   },
+   "activeSource": "AirPlay",
+   "isMe": true
+  },
+  {
+   "serial": "DEMOCELL0000WINDW",
+   "name": "Window",
+   "role": "secondary",
+   "ip": "192.168.1.138",
+   "online": true,
+   "calibrated": true,
+   "model": "C01_MP1",
+   "position": {
+    "rotation": 92.311759439675,
+    "x": 0.48148855437700677,
+    "y": 2.503041759021049,
+    "z": 1.5
+   },
+   "activeSource": "AirPlay",
+   "isMe": false
+  },
+  {
+   "serial": "DEMOCELL0000COUCH",
+   "name": "Couch",
+   "role": "secondary",
+   "ip": "192.168.1.30",
+   "online": true,
+   "calibrated": true,
+   "model": "C01_MP1",
+   "position": {
+    "rotation": -43.49052853702312,
+    "x": 3.8536912173401237,
+    "y": 2.6539673969690307,
+    "z": 1.5
+   },
+   "activeSource": "AirPlay",
+   "isMe": false
+  },
+  {
+   "serial": "DEMOCELL0000DESK1",
+   "name": "Desk",
+   "role": "secondary",
+   "ip": "192.168.1.192",
+   "online": true,
+   "calibrated": true,
+   "model": "C01_MP1",
+   "position": {
+    "rotation": -25.29132309605667,
+    "x": 3.8972141029624385,
+    "y": -0.14827499087685292,
+    "z": 1.5
+   },
+   "activeSource": null,
+   "isMe": false
+  },
+  {
+   "serial": "DEMOCELL0000HALL1",
+   "name": "Hallway",
+   "role": "secondary",
+   "ip": "192.168.1.44",
+   "online": true,
+   "calibrated": true,
+   "model": "C01_MP1",
+   "position": {
+    "rotation": -85.2782545926867,
+    "x": 0.03199890686729737,
+    "y": -0.002258027993316675,
+    "z": 1.5
+   },
+   "activeSource": null,
+   "isMe": false
+  }
+ ]
+}

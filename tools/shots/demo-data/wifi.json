@@ -1,0 +1,31 @@
+{
+ "state": "online",
+ "services": [
+  {
+   "id": "wifi_0000005e0053_41506572747572654c616273_managed_psk",
+   "name": "Home Wi-Fi",
+   "connected": true,
+   "online": true,
+   "autoconnect": true,
+   "security": "psk"
+  }
+ ],
+ "ip": "192.168.1.226",
+ "ips": [
+  [
+   "winfra0",
+   "192.168.1.226",
+   24
+  ],
+  [
+   "usb0",
+   "10.86.0.1",
+   24
+  ],
+  [
+   "usb1",
+   "10.86.1.1",
+   24
+  ]
+ ]
+}

@@ -64,6 +64,11 @@ echo 22767 > /sys/class/pwm/pwmchip2/pwm0/duty_cycle   # full red (chip2 = Red)
 
 ## Sound-reactive daemon (`syng-led-reactive`)
 
+Modes: `vu`, `spectrum`, `beat`, `rainbow`, `pulse`, `party`, `flow` (evolving colour, brightness from bass, idle at `--floor`) and
+`groove` (flow's colour engine driven by three layers: a slow mood level with its own 12 s AGC, a contrast-expanded transient
+layer, and a tempo tracker that locks a phase-synced breath to the beat; treble cools the tint, white only on hits).
+
+
 The dashboard's LED card (modes, group colour, beat sensitivity, floor, fades, vision editor) drives this
 daemon through `/api/led/*` on every cell (`scope: group`). It is enabled in the image by
 `tools/fw/build-troubadour.sh`; the service args live in `/etc/default/syng-led-reactive`.

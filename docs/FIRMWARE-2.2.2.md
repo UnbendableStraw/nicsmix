@@ -23,7 +23,7 @@ Nothing changed in the audio path, the spatialiser, SourceCast/SyFi, `cellbroker
 *state* protocol (`PatchState`/`GetState` are still there) or the calibration maths — so
 everything Troubadour does (agent, offline rooms, local calibration, LED, USB link) carries over.
 `etc/connman/main.conf` is the same as stock 2.2.1 (`PreferredTechnologies = wifi,ethernet`) —
-the "ethernet first" line is ours.
+the earlier "ethernet first" line was ours and is gone since b39 (see FIRMWARE-MODS).
 
 ## Does it matter offline?
 

@@ -13,6 +13,9 @@ const LENS = [0.251,0.261,0.271,0.281,0.291,0.302,0.312,0.322,0.332,0.342,0.352,
 // ---------- defaults (all tweakable live through field.cfg) ----------
 const DEFAULTS = {
   particles: 18000,        // ProtoTools particle count (CPU sim)
+  sceneScale: 0.5,         // the glow/flurry background renders at this fraction of the canvas (fragment-bound on phones/tablets)
+  reactiveFrac: 0.5,       // share of particles that take the full music push; the rest mostly idle (the app's two populations)
+  maxDPR: 1.5,
   simHz: 30,              // sim rate; rendering interpolates between sim steps (the app runs its kernel at 60)
   weightSpatial: 0.88,    // torus "weight": ra 0.28 / rb 0.22 (mask videos + the live recording's stem width)
   weightOmni: 2.0,        // 2 = full sphere (non-spatial: sound all around)
@@ -25,7 +28,8 @@ const DEFAULTS = {
   collapseFrac: 0.2,      // drag a handle this close to the puck to collapse (spatial off)
   pulseScale: 2.0,        // distanceScale: field radius -> pulse texture v (rows scroll at the feed rate, ~30/s)
   pulseRowsPerSec: 56,    // how fast a beat travels outward
-  pulseGain: 1.0,         // multiplies the particle pulse displacement
+  pulseGain: 0.35,        // multiplies the particle pulse displacement (now a shimmer; the puff physics below carries the beat)
+  puffGain: 0.005, puffBeat: 0.005, puffFloat: 0.9, puffVmax: 0.008, puffReach: 0.2,   // velocity impulse per onset (field units/step), per beat, and how long a puffed particle floats before the field pulls it back (s)
   pulseJitter: 0.25,       // row-to-row noise in the pulse texture (the app feeds a raw 60 Hz spectrogram; our feed is ~15 fps)
   pulseEmitter: 0.06,     // emitterRadius (field units; 0.5 = rim)
   glowGain: 1.0, grain: 1.0, flurry: 1.0, haloGain: 1.0,
@@ -33,6 +37,15 @@ const DEFAULTS = {
   colors: { cyanDeep:[0.0,0.36,0.54], cyan:[0.14,0.64,0.84], cyanLight:[0.54,0.84,0.95], white:[0.90,0.98,1.0], blue:[0.10,0.42,0.86], teal:[0.08,0.60,0.70],
             room:[0.10,0.26,0.33], roomEdge:[0.07,0.19,0.23], bg:[0,0,0] },
   showVolume: true, showRings: true, classicParticles: true,
+  autoPalette: true, palette: 'airplay',   // the field takes the active source's colours, like the app's Auras_* palettes
+  palettes: {   // decoded from the app's 16x16x16 colour histograms (_re/auras): deep / mid / light / white / blob A / blob B / room / room edge
+    airplay: { cyanDeep:[0.0,0.36,0.54], cyan:[0.14,0.64,0.84], cyanLight:[0.54,0.84,0.95], white:[0.90,0.98,1.0], blue:[0.10,0.42,0.86], teal:[0.08,0.60,0.70], room:[0.10,0.26,0.33], roomEdge:[0.07,0.19,0.23] },
+    spotify: { cyanDeep:[0.0,0.30,0.18], cyan:[0.13,0.56,0.33], cyanLight:[0.55,0.86,0.66], white:[0.92,1.0,0.95], blue:[0.08,0.46,0.30], teal:[0.12,0.62,0.40], room:[0.08,0.22,0.15], roomEdge:[0.06,0.16,0.11] },
+    tidal:   { cyanDeep:[0.0,0.33,0.33], cyan:[0.10,0.58,0.58], cyanLight:[0.55,0.86,0.86], white:[0.90,1.0,1.0], blue:[0.05,0.45,0.50], teal:[0.08,0.60,0.58], room:[0.08,0.24,0.24], roomEdge:[0.06,0.17,0.17] },
+    hdmi:    { cyanDeep:[0.10,0.08,0.40], cyan:[0.30,0.28,0.80], cyanLight:[0.65,0.62,0.95], white:[0.95,0.93,1.0], blue:[0.20,0.20,0.75], teal:[0.35,0.25,0.70], room:[0.12,0.10,0.30], roomEdge:[0.08,0.07,0.22] },
+    puredata:{ cyanDeep:[0.45,0.17,0.08], cyan:[0.93,0.48,0.33], cyanLight:[1.0,0.78,0.62], white:[1.0,0.96,0.92], blue:[0.85,0.35,0.20], teal:[0.95,0.55,0.30], room:[0.30,0.16,0.10], roomEdge:[0.22,0.11,0.07] },
+    usb:     { cyanDeep:[0.25,0.25,0.26], cyan:[0.55,0.55,0.56], cyanLight:[0.80,0.80,0.82], white:[0.98,0.98,1.0], blue:[0.40,0.42,0.48], teal:[0.50,0.52,0.55], room:[0.20,0.21,0.22], roomEdge:[0.14,0.15,0.16] },
+  },
   volume: 0.25,
   scaleM: 2.5,            // metres per room radius (only used when no reference circle is known)
   radiusUnits: 0.7,       // panner_v2 'radius' sent when spatial is on (the app's default)
@@ -170,7 +183,7 @@ void main(){
 // Particles: positions from the CPU sim (field space); pulse displacement + size/brightness from the pulse texture
 const PART_VS = `precision highp float;
 attribute vec2 aPos,aPrev; attribute float aSeed; uniform float uLerp;
-uniform vec2 uRes,uP,uN; uniform float uRf,uDPR,uPtScale,uHead,uPScale,uPEmit,uPGain,uPRows;
+uniform vec2 uRes,uP,uN; uniform float uRf,uDPR,uPtScale,uHead,uPScale,uPEmit,uPGain,uPRows,uReactLo;
 uniform sampler2D uPulse;
 varying float vCol;
 void main(){
@@ -182,7 +195,8 @@ void main(){
   float row=uHead+v;                     // newest row at uHead, older rows further along +v (REPEAT)
   float s1=texture2D(uPulse,vec2(u,row+1.0/32.0)).r;
   float s2=texture2D(uPulse,vec2(u,row-1.0/32.0)).r;
-  float amt=sqrt(max(1.0-v,0.0))*(s1-s2)*uPGain;
+  float react=mix(0.12,1.0,smoothstep(uReactLo,uReactLo+0.15,fract(aSeed*7.13+0.37)));   // two populations, like the app
+  float amt=sqrt(max(1.0-v,0.0))*(s1-s2)*uPGain*react;
   vec2 disp=(dist>0.001?p/dist:vec2(0.0))*0.05*amt;
   vec2 sp=uP+(p+disp)*2.0*uRf;
   vec2 cs=sp/uRes*2.0-1.0; cs.y=-cs.y;
@@ -252,12 +266,14 @@ function create(wrap, opts){
 
   // ----- programs -----
   const scene = mkProg(gl, QUAD_VS, SCENE_FS, ['uRes','uC','uP','uR','uRf','uTime','uE','uB','uGlow','uGrain','uFlurry','uN','uSinA','uCosA','uRa','uRb','uCapR','uBlend','uC1','uC2','cDeep','cCyan','cLight','cWhite','cRoom','cRoomEdge','uNoise','uBlob','uSpatial','uPuckR','uHaloGain','cBlue','cTeal','uPulseE','uPulseP']);
-  const part = mkProg(gl, PART_VS, PART_FS, ['uRes','uP','uN','uRf','uDPR','uPtScale','uHead','uPScale','uPEmit','uPGain','uPRows','uPulse','uPtGain','uLerp']);
+  const part = mkProg(gl, PART_VS, PART_FS, ['uRes','uP','uN','uRf','uDPR','uPtScale','uHead','uPScale','uPEmit','uPGain','uPRows','uPulse','uPtGain','uLerp','uReactLo']);
   const blit = mkProg(gl, QUAD_VS, BLIT_FS, ['uScene']);
   const orb = mkProg(gl, ORB_VS, ORB_FS, ['uScene','uGloss','uGlyph','uRes','uCenter','uSize','uRot','uRadius','uAlpha','uGlyphOn','uHalo','uDarken','uMode','uTint','uLensTex']);
   const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,1,1]), gl.STATIC_DRAW);
   const texNoise = loadTex(gl, TEX.noise, {repeat:true});
-  const texOrbB = loadTex(gl, TEX.orbB), texOrbC = loadTex(gl, TEX.orbC), texGlyph = loadTex(gl, TEX.airplay);
+  const texOrbB = loadTex(gl, TEX.orbB), texOrbC = loadTex(gl, TEX.orbC);
+  const texGlyphs = {}; if(TEX.glyphs) for(const k in TEX.glyphs) texGlyphs[k] = loadTex(gl, TEX.glyphs[k]); if(!texGlyphs.airplay) texGlyphs.airplay = loadTex(gl, TEX.airplay);
+  const glyphFor = n => texGlyphs[n] || texGlyphs[{usb:'usb',puredata:'puredata',hdmi:'hdmi',tidal:'tidal',spotify:'spotify'}[n]] || texGlyphs.airplay;
   const lensTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, lensTex);
   gl.texImage2D(gl.TEXTURE_2D,0,gl.LUMINANCE,64,1,0,gl.LUMINANCE,gl.UNSIGNED_BYTE,new Uint8Array(LENS.map(v=>Math.round(v*255))));
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
@@ -274,30 +290,54 @@ function create(wrap, opts){
   gl.bindTexture(gl.TEXTURE_2D, sceneTex);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const sceneLowTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, sceneLowTex);   // the soft background, rendered small and upscaled
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  let LW = 1, LH = 1;
 
   // ----- particles (CPU sim, exact port of updateParticle) -----
-  let NP = 0, P = null, V = null, O = null, L = null, seeds = null, posBuf = gl.createBuffer(), prevBuf = gl.createBuffer(), seedBuf = gl.createBuffer(), pos2 = null, prev2 = null, posDirty = true;
+  let NP = 0, P = null, V = null, O = null, L = null, FR = null, HM = null, RT = null, seeds = null, posBuf = gl.createBuffer(), prevBuf = gl.createBuffer(), seedBuf = gl.createBuffer(), pos2 = null, prev2 = null, posDirty = true;
   function rand1(x){ const s = Math.sin(x)*43758.5453; return s - Math.floor(s); }
   function spawn(i){ const t = i*0.125; P[i*3] = rand1(t)-0.5; P[i*3+1] = rand1(t+1)-0.5; P[i*3+2] = rand1(t+2)-0.5;
     V[i*3]=V[i*3+1]=V[i*3+2]=0; O[i*3]=P[i*3];O[i*3+1]=P[i*3+1];O[i*3+2]=P[i*3+2]; L[i] = 10+90*rand1(i*0.37+1.3); }
-  function allocParticles(n){ NP = n; P = new Float32Array(n*3); V = new Float32Array(n*3); O = new Float32Array(n*3); L = new Float32Array(n);
+  function allocParticles(n){ NP = n; P = new Float32Array(n*3); V = new Float32Array(n*3); O = new Float32Array(n*3); L = new Float32Array(n); FR = new Float32Array(n); HM = new Float32Array(n); RT = new Float32Array(n);
     pos2 = new Float32Array(n*2); prev2 = new Float32Array(n*2); seeds = new Float32Array(n); for(let i=0;i<n;i++){ spawn(i); seeds[i] = Math.random(); }
     gl.bindBuffer(gl.ARRAY_BUFFER, seedBuf); gl.bufferData(gl.ARRAY_BUFFER, seeds, gl.STATIC_DRAW); }
   allocParticles(cfg.particles);
   const S = {};
   function simStep(dt, simT){
     const eps = 0.001; prev2.set(pos2);
+    // music -> puff: an outward velocity impulse per onset in the particle's own spectrum band (bass at the notch,
+    // treble behind) plus a beat kick; puffed particles float (weak spring) for puffFloat s and then ease back
+    const lo = 1.0-clamp(cfg.reactiveFrac,0.05,1.0); const beatK = cfg.puffBeat*st.beat; const nx0=S.nx, ny0=S.ny;
+    let anyPuff = beatK > 0.0005; if(!anyPuff) for(let i=0;i<24;i++) if(st.flux[i] > 0.05){ anyPuff = true; break; }
     for(let i=0;i<NP;i++){
       const ix=i*3; let x=P[ix], y=P[ix+1], z=P[ix+2], vx=V[ix], vy=V[ix+1], vz=V[ix+2];
       const life = L[i] - dt*0.05*60;   // the app decrements per frame
       let nx, ny, nz;
+      let fr = FR[i];
+      if(anyPuff){
+        const sd = seeds[i]*7.13+0.37; const fr0 = sd - Math.floor(sd); const tt = clamp((fr0-lo)/0.15,0,1); const react = 0.12 + 0.88*tt*tt*(3-2*tt);
+        const dist = Math.sqrt(x*x+y*y);
+        if(dist > 0.02){
+          const ang = Math.atan2(-x*ny0 + y*nx0, x*nx0 + y*ny0); const ub = Math.min(23.999, Math.max(0, (0.5+0.5*ang/Math.PI)*24 - 0.5));
+          const b0 = Math.floor(ub), b1 = Math.min(23, b0+1), tb = ub-b0;   // blend the two nearest bands (plus a touch of the next ones) so the outline stays a curve
+          const fl = 0.75*(st.flux[b0]*(1-tb) + st.flux[b1]*tb) + 0.25*(st.flux[Math.max(0,b0-1)]*(1-tb) + st.flux[Math.min(23,b1+1)]*tb);
+          const home0 = HM[i] > 0.02 ? HM[i] : dist;   // how far past its resting radius it already is: the push fades out over puffReach, so particles float but never pile up at the rim
+          const att = Math.max(0, Math.min(1, 1 - (dist - home0)/Math.max(0.05, cfg.puffReach||0.2)));
+          const imp = react*(cfg.puffGain*fl + beatK)*att;
+          const vr = (vx*x+vy*y)/dist;   // current outward speed: a puff tops up to a ceiling, it never stacks without limit
+          if(imp > 0.0002 && vr < cfg.puffVmax && dist < 0.6){ const add = Math.min(imp, cfg.puffVmax-vr); vx += x/dist*add; vy += y/dist*add; if(fr<=0 && RT[i]<=0) HM[i] = HM[i] > 0.02 ? HM[i] + Math.max(-0.02, Math.min(0.02, dist-HM[i])) : dist; fr = Math.max(fr, cfg.puffFloat*react); RT[i] = cfg.puffFloat*1.5; }
+        }
+      }
       if(life > 0){
         const px=x+vx, py=y+vy, pz=z+vz;
         const d0 = sdf3(S,px,py,pz);
         let gx = sdf3(S,px+eps,py,pz)-d0, gy = sdf3(S,px,py+eps,pz)-d0, gz = sdf3(S,px,py,pz+eps)-d0;
         const gl2 = Math.sqrt(gx*gx+gy*gy+gz*gz);
         if(gl2>1e-9){gx/=gl2;gy/=gl2;gz/=gl2;} else {gx=gy=gz=0;}
-        const kk = (d0>0?1.2:0.5)*d0;
+        const ks = fr>0.5 ? 0.08 : (fr>0 ? 0.08+0.92*(1-fr/0.5) : 1.0);   // floating particles barely feel the field, then it eases back in over the last 0.5 s
+        const kk = (d0>0?1.2:0.5)*d0*ks;
         const fx=-kk*gx, fy=-kk*gy, fz=-kk*gz;
         vx+=fx; vy+=fy; vz+=fz;
         nx = x+fx+vx; ny = y+fy+vy; nz = z+fz+vz;
@@ -308,7 +348,11 @@ function create(wrap, opts){
       }
       const len = Math.sqrt(nx*nx+ny*ny+nz*nz);
       if(len>1){nx/=len;ny/=len;nz/=len;}
-      P[ix]=nx; P[ix+1]=ny; P[ix+2]=nz; V[ix]=vx*0.99; V[ix+1]=vy*0.99; V[ix+2]=vz*0.99;
+      if(RT[i]>0 && HM[i]>0.02){ // pull back toward the radius it had before the puff: gentle while floating, firmer once the float ends
+        const d2 = Math.sqrt(nx*nx+ny*ny); if(d2>0.02){ const g = (HM[i]-d2)*(fr>0 ? 0.012 : 0.04); vx += nx/d2*g; vy += ny/d2*g; } if(fr<=0) RT[i] -= dt; }
+      let damp = fr>0 ? 0.94 : 0.99; if(fr>0 && nx*nx+ny*ny > 0.42) damp = 0.85;   // past the rim the puff dies quickly
+      FR[i] = fr>0 ? fr-dt : 0;
+      P[ix]=nx; P[ix+1]=ny; P[ix+2]=nz; V[ix]=vx*damp; V[ix+1]=vy*damp; V[ix+2]=vz*damp;
       pos2[i*2]=nx; pos2[i*2+1]=ny;
     }
     posDirty = true;
@@ -327,13 +371,15 @@ function create(wrap, opts){
   for(let i=0;i<24;i++) st.blobs.push({x:(Math.random()-0.5)*0.8, y:(Math.random()-0.5)*0.8, r:0.36+Math.random()*0.09, a:0, vx:0, vy:0, life:Math.random()*10, ph:Math.random()*TAU});
 
   function resize(){
-    const W = wrap.clientWidth || 360; const H = Math.round(W*0.94); const DPR = Math.min((navigator.maxTouchPoints>0)?1.5:2, window.devicePixelRatio||1);
+    const W = wrap.clientWidth || 360; const H = Math.round(W*0.94); const DPR = Math.min(cfg.maxDPR||1.5, window.devicePixelRatio||1);
     const k = (st.W && W!==st.W) ? W/st.W : 1;   // the page re-flowed (fonts, scrollbar, first layout): keep the puck where it was
     if(k!==1 && st.puckInit){ st.puck[0]*=k; st.puck[1]*=k; st.puckT[0]*=k; st.puckT[1]*=k; if(st.liftDot){ st.liftDot[0]*=k; st.liftDot[1]*=k; } }
     st.W=W; st.H=H; st.DPR=DPR;
     glc.width = Math.round(W*DPR); glc.height = Math.round(H*DPR); glc.style.height = H+'px';
     ui.width = glc.width; ui.height = glc.height; ui.style.height = H+'px';
     gl.bindTexture(gl.TEXTURE_2D, sceneTex); gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,glc.width,glc.height,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+    LW = Math.max(1, Math.round(glc.width*(cfg.sceneScale||0.5))); LH = Math.max(1, Math.round(glc.height*(cfg.sceneScale||0.5)));
+    gl.bindTexture(gl.TEXTURE_2D, sceneLowTex); gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,LW,LH,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneTex, 0); gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     const R = W*0.385; st.R = R; st.C = [W/2, 0.045*W + R];
     if(!st.puckInit){ st.puck=[st.C[0],st.C[1]]; st.puckT=[st.C[0],st.C[1]]; st.puckInit=true; }
@@ -451,6 +497,8 @@ function create(wrap, opts){
     r = spring1(st.half, st.halfV, st.halfT, dt); st.half=r[0]; st.halfV=r[1];
     r = spring1(st.weight, st.weightV, st.spatial?cfg.weightSpatial:cfg.weightOmni, dt); st.weight=r[0]; st.weightV=r[1];
     st.volume += (st.volT-st.volume)*Math.min(1,dt*14);
+    { const tp = cfg.palettes[cfg.palette] || cfg.palettes.airplay; const k = Math.min(1, dt*1.6);
+      for(const key in tp){ const a = cfg.colors[key], b = tp[key]; if(!a) continue; for(let i=0;i<3;i++) a[i] += (b[i]-a[i])*k; } }
     // particle sim at fixed rate
     prepSDF(S, st.dir, st.spatial?st.half:Math.PI, st.weight, cfg);
     simAcc += dt; const h = 1/cfg.simHz; let steps=0; while(simAcc >= h && steps<2){ simStep(h, st.t); simAcc -= h; steps++; } if(simAcc>h) simAcc=h*0.99;
@@ -472,27 +520,32 @@ function create(wrap, opts){
     const W=st.W, H=st.H, D=st.DPR, RW=glc.width, RH=glc.height;
     const Rf = fieldR(); const px = [st.puck[0]*D, st.puck[1]*D];
     // ---- scene to FBO ----
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.viewport(0,0,RW,RH); gl.disable(gl.BLEND);
+    const SS = LW/RW;   // background pass at reduced resolution
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneLowTex, 0); gl.viewport(0,0,LW,LH); gl.disable(gl.BLEND);
     gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(scene.p); gl.bindBuffer(gl.ARRAY_BUFFER, quad); const ap=gl.getAttribLocation(scene.p,'p'); gl.enableVertexAttribArray(ap); gl.vertexAttribPointer(ap,2,gl.FLOAT,false,0,0);
-    gl.uniform2f(scene.u.uRes,RW,RH); gl.uniform2f(scene.u.uC,st.C[0]*D,st.C[1]*D); gl.uniform2f(scene.u.uP,px[0],px[1]);
-    gl.uniform1f(scene.u.uR,st.R*D); gl.uniform1f(scene.u.uRf,Rf*D); gl.uniform1f(scene.u.uTime,st.t);
+    gl.uniform2f(scene.u.uRes,LW,LH); gl.uniform2f(scene.u.uC,st.C[0]*D*SS,st.C[1]*D*SS); gl.uniform2f(scene.u.uP,px[0]*SS,px[1]*SS);
+    gl.uniform1f(scene.u.uR,st.R*D*SS); gl.uniform1f(scene.u.uRf,Rf*D*SS); gl.uniform1f(scene.u.uTime,st.t);
     gl.uniform1f(scene.u.uE,st.e); gl.uniform1f(scene.u.uB,st.b); gl.uniform1f(scene.u.uGlow,cfg.glowGain); gl.uniform1f(scene.u.uGrain,cfg.grain); gl.uniform1f(scene.u.uFlurry,cfg.flurry);
     gl.uniform2f(scene.u.uN,S.nx,S.ny); gl.uniform1f(scene.u.uSinA,S.sinA); gl.uniform1f(scene.u.uCosA,S.cosA); gl.uniform1f(scene.u.uRa,S.ra); gl.uniform1f(scene.u.uRb,S.rb);
     gl.uniform1f(scene.u.uCapR,S.capR); gl.uniform1f(scene.u.uBlend,S.blend); gl.uniform2f(scene.u.uC1,S.c1x,S.c1y); gl.uniform2f(scene.u.uC2,S.c2x,S.c2y);
     const c=cfg.colors; gl.uniform3fv(scene.u.cBlue,c.blue); gl.uniform3fv(scene.u.cTeal,c.teal);
-    gl.uniform1f(scene.u.uSpatial,1-clamp((st.weight-cfg.weightSpatial)/(cfg.weightOmni-cfg.weightSpatial),0,1)); gl.uniform1f(scene.u.uPuckR,puckR()*D); gl.uniform1f(scene.u.uHaloGain,cfg.haloGain);
+    gl.uniform1f(scene.u.uSpatial,1-clamp((st.weight-cfg.weightSpatial)/(cfg.weightOmni-cfg.weightSpatial),0,1)); gl.uniform1f(scene.u.uPuckR,puckR()*D*SS); gl.uniform1f(scene.u.uHaloGain,cfg.haloGain);
     gl.uniform4fv(scene.u.uPulseE,st.pulseE); gl.uniform4fv(scene.u.uPulseP,st.pulseP);
     gl.uniform3fv(scene.u.cDeep,c.cyanDeep); gl.uniform3fv(scene.u.cCyan,c.cyan); gl.uniform3fv(scene.u.cLight,c.cyanLight); gl.uniform3fv(scene.u.cWhite,c.white); gl.uniform3fv(scene.u.cRoom,c.room); gl.uniform3fv(scene.u.cRoomEdge,c.roomEdge);
     const bl = new Float32Array(24*4); st.blobs.forEach((b,i)=>{bl[i*4]=b.x;bl[i*4+1]=b.y;bl[i*4+2]=b.r;bl[i*4+3]=b.a;}); gl.uniform4fv(scene.u.uBlob, bl);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texNoise); gl.uniform1i(scene.u.uNoise,0);
     gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+    // upscale the background into the full-size scene texture, then the particles go on top at full resolution
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneTex, 0); gl.viewport(0,0,RW,RH);
+    gl.useProgram(blit.p); const bp0=gl.getAttribLocation(blit.p,'p'); gl.enableVertexAttribArray(bp0); gl.vertexAttribPointer(bp0,2,gl.FLOAT,false,0,0);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,sceneLowTex); gl.uniform1i(blit.u.uScene,0); gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
     // particles (additive)
     if(posDirty){ gl.bindBuffer(gl.ARRAY_BUFFER,posBuf); gl.bufferData(gl.ARRAY_BUFFER,pos2,gl.DYNAMIC_DRAW); gl.bindBuffer(gl.ARRAY_BUFFER,prevBuf); gl.bufferData(gl.ARRAY_BUFFER,prev2,gl.DYNAMIC_DRAW); posDirty=false; }
     gl.useProgram(part.p); gl.enable(gl.BLEND); gl.blendFunc(gl.ONE,gl.ONE);
     gl.bindBuffer(gl.ARRAY_BUFFER,posBuf); const aPos=gl.getAttribLocation(part.p,'aPos'); gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
     gl.bindBuffer(gl.ARRAY_BUFFER,prevBuf); const aPrev=gl.getAttribLocation(part.p,'aPrev'); gl.enableVertexAttribArray(aPrev); gl.vertexAttribPointer(aPrev,2,gl.FLOAT,false,0,0);
-    gl.uniform1f(part.u.uLerp, clamp(simAcc*cfg.simHz,0,1));
+    gl.uniform1f(part.u.uLerp, clamp(simAcc*cfg.simHz,0,1)); gl.uniform1f(part.u.uReactLo, 1.0-clamp(cfg.reactiveFrac,0.05,1.0));
     gl.bindBuffer(gl.ARRAY_BUFFER,seedBuf); const aSeed=gl.getAttribLocation(part.p,'aSeed'); gl.enableVertexAttribArray(aSeed); gl.vertexAttribPointer(aSeed,1,gl.FLOAT,false,0,0);
     gl.uniform2f(part.u.uRes,RW,RH); gl.uniform2f(part.u.uP,px[0],px[1]); gl.uniform2f(part.u.uN,S.nx,S.ny); gl.uniform1f(part.u.uRf,Rf*D); gl.uniform1f(part.u.uDPR,D);
     gl.uniform1f(part.u.uPtScale,cfg.pointScale*Math.max(0.7,st.R/180)); gl.uniform1f(part.u.uHead,(pulseHead+1-clamp((performance.now()-st.lastRowT)/1000*st.fps,0,1))/PR); gl.uniform1f(part.u.uPScale,cfg.pulseScale); gl.uniform1f(part.u.uPEmit,cfg.pulseEmitter); gl.uniform1f(part.u.uPGain,cfg.pulseGain); gl.uniform1f(part.u.uPtGain,cfg.pointGain); gl.uniform1f(part.u.uPRows,PR);
@@ -509,7 +562,7 @@ function create(wrap, opts){
     gl.uniform2f(orb.u.uRes,RW,RH);
     gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D,lensTex); gl.uniform1i(orb.u.uLensTex,3);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,sceneTex); gl.uniform1i(orb.u.uScene,0);
-    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D,texGlyph); gl.uniform1i(orb.u.uGlyph,2);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D,glyphFor(cfg.palette)); gl.uniform1i(orb.u.uGlyph,2);
     function drawOrb(cx,cy,rad,glossTex,o){ o=o||{}; gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,glossTex); gl.uniform1i(orb.u.uGloss,1);
       const mode = o.shadow ? 3 : (o.halo ? 2 : (o.capsule ? 1 : 0)); const len = o.len||rad; const ext = o.halo ? 3.4 : 1.0;
       gl.uniform2f(orb.u.uCenter,cx*D,cy*D); gl.uniform2f(orb.u.uSize,rad*D*ext,(mode===1?len:rad)*D*ext); gl.uniform1f(orb.u.uRot,o.rot||0);
@@ -556,6 +609,9 @@ function create(wrap, opts){
     setPuckUnits(ux,uy){ const p=clampPuck([st.C[0]+ux*st.R, st.C[1]-uy*st.R]); st.puckT=p; },
     setVolume(v){ st.volT = clamp(v,0,1); },
     center(){ st.puckT=[st.C[0],st.C[1]]; st.snap=null; },
+    setPalette(name){ if(cfg.palettes[name]) cfg.palette = name; },
+    debugRadius(){ let a=0; for(let i=0;i<NP;i++) a+=Math.hypot(pos2[i*2],pos2[i*2+1]); return a/NP; },
+    debugDist(){ let inner=0, outer=0; for(let i=0;i<NP;i++){ const d=Math.hypot(pos2[i*2],pos2[i*2+1]); if(d<0.25) inner++; else if(d>0.45) outer++; } return {inner:inner/NP, outer:outer/NP}; },
   };
   return api;
 }

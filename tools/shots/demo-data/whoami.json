@@ -1,0 +1,76 @@
+{
+ "serial": "DEMOCELL0000KITCH",
+ "ip": "192.168.1.226",
+ "ips": [
+  [
+   "winfra0",
+   "192.168.1.226",
+   24
+  ],
+  [
+   "usb0",
+   "10.86.0.1",
+   24
+  ],
+  [
+   "usb1",
+   "10.86.1.1",
+   24
+  ]
+ ],
+ "hostname": "syngDEMOCELL0000KITCH",
+ "name": "Kitchen",
+ "syfi_ip": "fe80::1234:5678:9abc:def0",
+ "syfi_good": true,
+ "time_sync_good": true,
+ "bssid": "00:00:5e:00:53:af",
+ "model": "C01_MP1",
+ "version": "Troubadour-2.2.2",
+ "ssh_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAADEMOKEYDEMOKEYDEMOKEYDEMOKEYDEMOKEY00 root@syngDEMOCELL0000KITCH",
+ "ssh_host": "192.168.1.226 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAADEMOKEYDEMOKEYDEMOKEYDEMOKEYDEMOKEY00 root@syngDEMOCELL0000KITCH",
+ "room_id": "11111111-2222-3333-4444-555555555555",
+ "place_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+ "room_name": "Ball Room",
+ "role": "primary",
+ "doc_role": "primary",
+ "role_pinned": false,
+ "calibrated": true,
+ "position": {
+  "rotation": -3.197754702784922,
+  "x": 1.8938124936245335,
+  "y": 1.2110086512345006,
+  "z": 1.5
+ },
+ "is_upside_down": true,
+ "height_layer": 0.0,
+ "nearby_walls": [
+  {
+   "angle_deg": -135.0,
+   "close_to_wall": true,
+   "distance_m": 0.5,
+   "likelihood": 0.4275630014079601
+  }
+ ],
+ "syfiGood": true,
+ "timeSyncGood": true,
+ "members": [
+  "DEMOCELL0000KITCH",
+  "DEMOCELL0000WINDW",
+  "DEMOCELL0000COUCH",
+  "DEMOCELL0000DESK1",
+  "DEMOCELL0000HALL1"
+ ],
+ "cloud_blocked": true,
+ "agent": "b51",
+ "rssi": -41,
+ "setup_phase": "placed",
+ "wifi": {
+  "state": "online",
+  "ssid": "Home Wi-Fi",
+  "ip": "192.168.1.226"
+ },
+ "wired_if": null,
+ "wired_ip": null,
+ "link_mode": "syfi",
+ "ptp": null
+}

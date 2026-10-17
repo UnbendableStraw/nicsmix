@@ -193,14 +193,59 @@ def render(mode, env, flux, state, now, cfg):
         return (min(1.0, r + flash * 0.2), min(1.0, g + flash * 0.2),
                 min(1.0, b + flash * 0.2), flash * 0.6)        # white pop on the boom
     if mode == "flow":
-        v = max(cfg["floor"], min(1.0, 0.22 + bass * 1.0 + flash * 0.2))
+        fl = cfg["floor"]
+        v = max(fl, min(1.0, fl + (1.0 - fl) * (bass * 1.0 + flash * 0.2)))
         r, g, b = hsv_to_rgb(hue, 1.0, v)
         # treble shimmer: a nearby hue at low saturation (NOT the complement, which
         # would sum with the base toward white under a full-spectrum signal)
         sh = min(0.35, tre * 0.45)
         sr, sg, sb = hsv_to_rgb((hue + 0.08) % 1.0, 0.8, sh)
         return (min(1.0, r + sr), min(1.0, g + sg), min(1.0, b + sb), 0)
+    if mode == "groove":
+        return render_groove(env, flux, state, now, cfg, hue, flash)
     return (0, 0, 0, 0)
+
+def render_groove(env, flux, state, now, cfg, hue, flash):
+    """flow's evolving colour, driven by three layers instead of one:
+         slow  — 1.5 s energy average: the room's mood (verse vs chorus), with a slow AGC so quiet
+                 passages really are dimmer instead of being normalised up;
+         fast  — 80 ms energy with contrast expansion: the transients;
+         tempo — onsets (bass flux) are timed; when 4+ regular gaps agree (0.3–1.2 s) a phase-locked
+                 breath rides the beat even between hits, and the hue kick waits for the downbeat.
+       Treble pulls the tint toward a cooler, whiter hue; bass deepens saturation."""
+    import math
+    bass, mid, tre, overall = [float(v) for v in env]
+    dt = max(1e-3, min(0.1, now - state.get("g_t", now - 0.016))); state["g_t"] = now
+    def ema(key, x, tau):
+        a = 1.0 - math.exp(-dt / tau); state[key] = state.get(key, x) + a * (x - state.get(key, x)); return state[key]
+    slow = ema("g_slow", overall, 1.5)
+    fast = ema("g_fast", overall, 0.08)
+    peak = state["g_peak"] = max(state.get("g_peak", 0.0) * (1.0 - dt / 12.0), slow, 0.05)   # 12 s AGC on the mood layer
+    mood = min(1.0, slow / peak)                                   # 0..1, quiet passages stay down
+    trans = max(0.0, min(1.0, (fast - 0.55 * slow) / 0.45)) ** 1.6  # contrast-expanded transient layer
+    # --- tempo ---
+    ons = state.setdefault("g_onsets", [])
+    if flux > cfg["beat_sens"] and (not ons or now - ons[-1] > 0.22):
+        ons.append(now); del ons[:-10]
+    period = None
+    if len(ons) >= 5:
+        gaps = [b - a for a, b in zip(ons[-6:], ons[-5:]) if 0.28 <= b - a <= 1.25]
+        if len(gaps) >= 4:
+            gaps.sort(); med = gaps[len(gaps) // 2]
+            if all(abs(g - med) < 0.12 * med for g in gaps): period = med
+    breath = 0.0
+    if period and ons and now - ons[-1] < 2.5 * period:
+        ph = ((now - ons[-1]) / period) % 1.0
+        breath = 0.5 + 0.5 * math.cos(2 * math.pi * ph)        # peaks on the predicted beat
+    state["g_period"] = period
+    fl = cfg["floor"]
+    lvl = 0.30 * mood + 0.45 * trans + 0.25 * flash + 0.22 * breath * mood
+    v = max(fl, min(1.0, fl + (1.0 - fl) * lvl))
+    sat = max(0.55, min(1.0, 1.0 - 0.45 * tre + 0.25 * bass))     # treble cools and whitens, bass deepens
+    h = (hue + 0.06 * tre - 0.03 * bass) % 1.0
+    r, g, b = hsv_to_rgb(h, sat, v)
+    w = min(0.6, flash * 0.35 * (0.5 + tre))                      # white only on the hits
+    return (r, g, b, w)
 
 def discover_ports(kind):
     try:
@@ -346,7 +391,7 @@ def run_viz(args, cfg):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", default="pulse",
-                    choices=["vu", "spectrum", "beat", "rainbow", "pulse", "party", "flow"])
+                    choices=["vu", "spectrum", "beat", "rainbow", "pulse", "party", "flow", "groove"])
     ap.add_argument("--source", default="playback", choices=["playback", "mic", "viz"])
     ap.add_argument("--viz-port", type=int, default=7249, help="UDP port for the viz feed (--source viz)")
     ap.add_argument("--ports", default="")

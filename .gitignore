@@ -1,0 +1,27 @@
+# never publish these
+keys/
+*.pem
+id_*
+# stock / built firmware images (hundreds of MB; bring your own stock package)
+*.sdcard
+*.sdcard.lzma
+*.sdcard.xz
+imx-boot
+/build/
+/build-*/
+# per-installation data captured from real cells (serials, keys, Wi-Fi)
+_re/
+fixtures/
+state-backup/
+# the agent build chain is published, but not the 480 KB per-build agent copies
+agent/build/history/syng-agent-*.py
+# noise
+.DS_Store
+__pycache__/
+*.pyc
+node_modules/
+apps/android/local.properties
+apps/android/.gradle/
+apps/android/build/
+apps/android/app/build/
+apps/ios/Troubadour.xcodeproj/

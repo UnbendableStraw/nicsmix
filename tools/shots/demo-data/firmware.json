@@ -1,0 +1,44 @@
+{
+ "running": {
+  "artifact": "Troubadour-2.2.2",
+  "version": "20260715160932",
+  "part": 3,
+  "agent": "b51"
+ },
+ "other": {
+  "part": 2,
+  "artifact": "Troubadour-2.2.1",
+  "version": "20241122102306",
+  "agent": "b48"
+ },
+ "env": {
+  "mender_boot_part": "3",
+  "upgrade_available": "0",
+  "bootcount": "0",
+  "bootlimit": "1"
+ },
+ "image": {
+  "name": "troubadour-rootfs-Troubadour-2.2.2.img.gz",
+  "size": 278031660,
+  "sha256": "1a2327874950335c53a35ca0aae068973fcd4923fc7203b0082b3b97e06716fb",
+  "artifact": "Troubadour-2.2.2",
+  "at": 1792215863.000142,
+  "source": "from 192.168.1.138"
+ },
+ "last": {
+  "at": 1792218075.3219204,
+  "from": "Troubadour-2.2.1",
+  "to": "Troubadour-2.2.2",
+  "slot": 3,
+  "state": "committed",
+  "committed_at": 1792218161.9374943,
+  "running": "Troubadour-2.2.2"
+ },
+ "busy": null,
+ "progress": 0.0,
+ "log": [],
+ "room": null,
+ "error": null,
+ "done": null,
+ "free_bytes": 2788185088
+}

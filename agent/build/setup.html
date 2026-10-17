@@ -1,13 +1,19 @@
 <!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><title>Syng · Setup</title>
 <style>
-:root{--bg:#14161b;--surface:#1b1e26;--surface2:#222633;--line:#2b3140;--text:#e8eaf0;
- --muted:#98a0b0;--accent:#8a7cff;--live:#4fd1c5;--warn:#e6a23c;--bad:#e5618a;--radius:18px}
-@media (prefers-color-scheme:light){:root{--bg:#eef0f4;--surface:#fff;--surface2:#f3f5f9;
- --line:#dde1e9;--text:#1a1d24;--muted:#5d6676;--accent:#6a5cff;--live:#1aa89a}}
+:root{--bg:#000;--surface:#1a1a1a;--surface2:#2a2a2a;--line:#303030;--text:#fff;--muted:#8e8e8e;
+ --accent:#fff;--accent-ink:#000;--live:#79de96;--warn:#e0b35a;--bad:#e0514c;--radius:20px;color-scheme:dark}
+@media (prefers-color-scheme:light){:root:not([data-theme=dark]){--bg:#fff;--surface:#f2f2f2;--surface2:#e4e4e4;--line:#d9d9d9;--text:#000;--muted:#6e6e6e;
+ --accent:#000;--accent-ink:#fff;--live:#1f9d4d;--warn:#b8831d;--bad:#d43f3a;color-scheme:light}}
+:root[data-theme=light]{--bg:#fff;--surface:#f2f2f2;--surface2:#e4e4e4;--line:#d9d9d9;--text:#000;--muted:#6e6e6e;--accent:#000;--accent-ink:#fff;--live:#1f9d4d;--warn:#b8831d;--bad:#d43f3a;color-scheme:light}
+@font-face{font-family:Graphik;src:url(/fonts/Graphik-Regular-App.ttf) format("truetype");font-weight:400;font-display:swap}
+@font-face{font-family:Graphik;src:url(/fonts/Graphik-Medium-App.ttf) format("truetype");font-weight:500;font-display:swap}
+@font-face{font-family:Graphik;src:url(/fonts/Graphik-Semibold-App.ttf) format("truetype");font-weight:600;font-display:swap}
+@font-face{font-family:Graphik;src:url(/fonts/Graphik-Bold-App.ttf) format("truetype");font-weight:700;font-display:swap}
+.themebtn{font:inherit;font-size:12px;color:var(--muted);background:none;border:1px solid var(--line);border-radius:999px;padding:3px 10px;cursor:pointer;margin-left:10px}
 *{box-sizing:border-box}html,body{margin:0}
 body{background:var(--bg);color:var(--text);font-variant-numeric:tabular-nums;
- font-family:ui-rounded,"SF Pro Rounded","SF Pro",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+ font-family:Graphik,-apple-system,"SF Pro Text","Helvetica Neue",Inter,system-ui,Arial,sans-serif;letter-spacing:-.004em;
  -webkit-font-smoothing:antialiased;padding:16px;line-height:1.4}
 .wrap{max-width:900px;margin:0 auto}
 header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:6px 2px 16px}
@@ -42,7 +48,8 @@ input[type=number]{width:74px}
 .room h3{margin:0 0 8px;font-size:14px;display:flex;justify-content:space-between;align-items:center;gap:8px}
 .room h3 small{color:var(--muted);font-weight:500}
 .muted{color:var(--muted);font-size:12px}.ok{color:var(--live)}.bad{color:var(--bad)}.warn{color:var(--warn)}
-#map{width:100%;height:auto;display:block;background:var(--surface2);border-radius:12px;touch-action:none;cursor:grab}
+.row{display:flex;justify-content:space-between;gap:12px;padding:3px 0;font-size:13px}.row span:first-child{color:var(--muted)}.row span:last-child{text-align:right}
+#map{width:100%;height:auto;display:block;background:var(--surface2);border-radius:12px;touch-action:none;cursor:grab;outline:none}#map:focus{outline:none}
 .log{font:12px ui-monospace,Menlo,monospace;background:var(--surface2);border-radius:10px;padding:10px;max-height:180px;overflow:auto;white-space:pre-wrap;color:var(--muted)}
 table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:6px 6px;text-align:left;border-bottom:1px solid var(--line)}th{color:var(--muted);font-weight:600;font-size:11px;letter-spacing:.08em}
 td input[type=number]{width:66px;padding:5px 6px}
@@ -50,8 +57,44 @@ td input[type=number]{width:66px;padding:5px 6px}
 .toast.show{opacity:1}
 details summary{cursor:pointer;color:var(--muted);font-size:13px}
 .hint{font-size:12px;color:var(--muted);margin:6px 0 0}
+/* ---- Syng look (dark = the app; light = the same system inverted) ---- */
+.card,.hero{border-color:transparent;border-radius:var(--radius)}
+.card h2{font-size:12px;letter-spacing:.08em;color:var(--muted);font-weight:500}
+.card h2 .rn{font-weight:700}
+.id h1{font-weight:700;letter-spacing:-.02em}
+.btn,.srcbtn,.themebtn{border-radius:999px;font-weight:600}
+.btn{border-color:var(--line);background:var(--surface2)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.live{border-color:var(--text);color:var(--text);background:transparent}
+.btn.danger{background:transparent}
+.srcbtn{border-color:transparent;background:var(--surface2)}
+.srcbtn.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);box-shadow:none}
+.badge{border-color:var(--line);color:var(--muted)}.badge.role{color:var(--text);border-color:var(--text)}
+.badge.good{color:var(--live);border-color:color-mix(in srgb,var(--live) 50%,transparent)}
+.badge.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 50%,transparent)}
+input[type=range]{background:var(--surface2)}
+input[type=range]::-webkit-slider-thumb{background:var(--text);border:2px solid var(--surface)}
+input[type=range].tone::-webkit-slider-thumb{background:var(--text)}
+.mark{color:var(--muted);letter-spacing:.16em;font-weight:500}.mark b{color:var(--text)}
+.dot.on{background:var(--live)}
+.fcell,.item,.sysmetric{background:var(--surface2);border-color:transparent;border-radius:14px}
+.fcell.me,.item.me{box-shadow:inset 0 0 0 1px var(--text)}
+.fdot.pri{background:var(--text)}
+.orb{background:radial-gradient(72% 72% at 42% 36%,#3b3b3b,#060606 76%);box-shadow:inset 0 0 0 1px #000,0 12px 30px #0009}
+.orb::before{content:"";position:absolute;inset:0;border-radius:50%;
+ background:radial-gradient(circle at 50% 37%,#e3a24c 0 6%,transparent 7%),radial-gradient(circle at 40% 57%,#e3a24c 0 6%,transparent 7%),radial-gradient(circle at 60% 57%,#e3a24c 0 6%,transparent 7%)}
+.orb.primary{--ring:var(--text)}
+.spark polyline{stroke:var(--text)}.spark .area{fill:color-mix(in srgb,var(--text) 10%,transparent)}
+.toast{border-color:transparent;box-shadow:0 10px 30px #000a}
+.room{border-color:var(--line);border-radius:16px}
+table th{font-weight:500;letter-spacing:.08em}
+#map{background:var(--surface);border-radius:var(--radius)}
 </style></head><body><div class=wrap>
-<header><div class=mark><b>SYNG</b> · SETUP <a href="/">← dashboard</a></div><div class=muted id=agentv></div></header>
+<script>(function(){try{const d=Object.getOwnPropertyDescriptor(Element.prototype,'innerHTML');Object.defineProperty(Element.prototype,'innerHTML',{configurable:true,get:d.get,set:function(v){if(this.__h===v)return;this.__h=v;d.set.call(this,v);}});}catch(e){}})();</script>
+<script>(function(){const T=['dark','light','auto'];let t='dark';try{t=localStorage.getItem('syngTheme')||'dark';}catch(e){}
+function apply(){if(t==='auto')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',t);document.querySelectorAll('.themebtn').forEach(b=>b.textContent='theme: '+t);}
+window.cycleTheme=function(){t=T[(T.indexOf(t)+1)%T.length];try{localStorage.setItem('syngTheme',t);}catch(e){}apply();};apply();window.addEventListener('DOMContentLoaded',apply);})();</script>
+<header><div class=mark><b>SYNG</b> · SETUP <a href="/">← dashboard</a><button class=themebtn onclick="cycleTheme()">theme</button></div><div class=muted id=agentv></div></header>
 
 <div class=card><div class=hero><div class=orb id=orb></div><div class=id>
   <h1 id=title>…</h1><div class=sub id=sub></div><div class=badges id=badges></div></div></div></div>
@@ -61,6 +104,10 @@ details summary{cursor:pointer;color:var(--muted);font-size:13px}
   <div class=list id=wifilist style="margin-top:10px"></div>
   <details style="margin-top:10px"><summary>Join a hidden network / enter manually</summary>
     <div class=rowb><input type=text id=wssid placeholder="Network name"><input type=password id=wpsk placeholder="Password"><button class=btn id=wjoin>Connect</button></div></details>
+  <details style="margin-top:10px"><summary>Network settings — radios, addresses, DNS</summary>
+    <div id=netsettings class=muted style="margin-top:8px">…</div></details>
+  <details style="margin-top:10px" id=linkdet><summary>Cell-to-cell link — SyFi or wired Ethernet</summary>
+    <div id=linkbox class=muted style="margin-top:8px">…</div></details>
   <p class=hint>Setup link: plug this speaker into a laptop with a USB-C cable and open <b>http://10.86.0.1:8080/setup</b> (the other port is 10.86.1.1). It also works over a USB-C Ethernet adapter or Wi-Fi.</p>
 </div>
 
@@ -72,22 +119,48 @@ details summary{cursor:pointer;color:var(--muted);font-size:13px}
 
 <div class=card id=layoutcard style="display:none"><h2>ROOM LAYOUT <span class=rn id=roomname></span><span style="flex:1"></span>
   <button class="btn sm" id=rename>Rename</button></h2>
-  <canvas id=map></canvas>
-  <div class=muted style="margin-top:6px">Drag a speaker to move it · drag its tick to turn it · dashed circle = the sound-field reference circle (drag its centre, edge or ◆ to rotate) · ◎ = listener. Front of the room is up.</div>
+  <canvas id=map tabindex=0></canvas>
+  <div class=rowb style="margin-top:8px"><button class="btn sm" id=rotl title="Turn the room a quarter turn (R)">↺ 90°</button><button class="btn sm" id=rotr title="Turn the room a quarter turn (⇧R)">↻ 90°</button><button class="btn sm" id=undo disabled title="Undo (⌘Z)">Undo</button><button class="btn sm" id=identify title="Each speaker plays the identify sound in turn while its dot pulses">Identify in turn</button><span class=muted id=savestate style="margin-left:auto"></span></div>
+  <div class=muted style="margin-top:2px">The dashed circle is the sound field, front up. <b>Drag the room</b> to move the speakers in it · <b>scroll / pinch</b> to grow or shrink · <b>⌥-drag, ⇧-scroll or two-finger twist</b> to rotate · drag a <b>speaker</b> to fine-tune it (snaps to the centre and the wall, ⇧ to skip) · drag its tick to turn it · ◎ listener. Changes play live and save when you let go.</div>
   <div class=rowb style="margin-top:10px">
     <button class="btn pri" id=save disabled>Save layout</button>
     <button class=btn id=autocircle>Auto circle &amp; listener</button>
     <button class="btn live" id=calib>Soundcheck (calibrate)</button>
+    <button class="btn" id=calib3 title="Three measurement passes combined robustly — about three times as long, much steadier layout">Soundcheck ×3</button>
     <span class=muted id=calstate></span></div>
   <div class=log id=callog style="display:none"></div>
   <div style="overflow:auto;margin-top:10px"><table id=cells></table></div>
-  <p class=hint>Soundcheck plays chirps from every speaker in turn (about a minute per speaker) and measures positions, orientation, walls and room EQ on the speakers themselves. Keep the room quiet. Results are stored by this firmware — no Syng account involved.</p>
+  <p class=hint>Soundcheck plays chirps from every speaker in turn (about a minute per speaker) and measures positions, orientation, walls and room EQ on the speakers themselves; playback is paused meanwhile. Keep the room quiet. <b>×3</b> runs it three times and solves the layout from the median of the measurements — use it when a single run looks off. Results are stored by this firmware — no Syng account involved.</p>
+</div>
+
+<div class=card id=fwcard><h2>FIRMWARE <span><button class="btn sm" id=fwrefresh>Refresh</button></span></h2>
+  <div id=fwinfo class=muted>…</div>
+  <div class=rowb style="margin-top:10px">
+    <input type=file id=fwfile accept=".gz,.img.gz,application/gzip" style="display:none">
+    <button class="btn" id=fwupload>Upload image…</button>
+    <button class="btn pri" id=fwinstall>Install on this speaker</button>
+    <button class="btn" id=fwsend>Send to all speakers</button>
+    <button class="btn" id=fwroom>Install on all speakers</button>
+    <button class="btn danger sm" id=fwroll>Boot the other slot</button>
+    <span class=muted id=fwbusy></span></div>
+  <div class=log id=fwlog style="display:none;margin-top:8px"></div>
+  <p class=hint>The speakers keep two system slots (p2 / p3). An update is written to the idle one, read back and verified, your Troubadour files (agent, LED daemon, cloud block, keys, root password) are carried over, then the boot slot is switched with U-Boot's <i>upgrade_available</i> set, so a slot that does not come up is undone by the bootloader on the next boot. Settings, rooms, Wi-Fi and calibration live on the data partition and survive. Images come from <code>tools/fw/build-troubadour.sh</code> (<code>troubadour-rootfs-&lt;artifact&gt;.img.gz</code>, next to image.sdcard). Room-wide: <b>Send</b> copies the image to every member, <b>Install on all</b> updates the secondaries one by one and this primary last.</p>
 </div>
 
 <div class=card><details><summary>Advanced</summary>
   <div class=rowb style="margin-top:10px"><span class=muted id=cbstate></span><button class="btn sm" id=cbtoggle>…</button></div>
   <div class=rowb><button class="btn sm" id=showdoc>Show room document</button><button class="btn sm danger" id=restore>Restore pre-agent state on this speaker</button></div>
   <div class=log id=doc style="display:none"></div>
+  <h2 style="margin-top:16px">CONTROL RING &amp; SOUNDS</h2>
+  <div class=rowb><label class=muted>Ring volume steps <input type=number id=ringsteps min=10 max=400 step=10 style="width:80px"></label>
+    <label class=muted><input type=checkbox id=ringcw> clockwise = louder</label>
+    <label class=muted>UI sound level <input type=number id=uisnd min=0 max=60 step=5 style="width:70px"> %</label>
+    <button class="btn sm" id=ringsave>Apply</button></div>
+  <p class=hint>Ring steps = how many ring positions span the volume range (stock 100 — fewer = coarser, more = finer). Direction restarts the ring daemon (hidserver) on this cell only; the UI sound level is what Ping and the setup chimes play at (stock 25 %).</p>
+  <h2 style="margin-top:16px">HOUSEKEEPING <span><button class="btn sm" id=hkrefresh>Refresh</button></span></h2>
+  <div id=hk class=muted>…</div>
+  <div class=rowb><button class="btn sm" id=hkvac>Vacuum journal to 32 MB</button><button class="btn sm" id=hkcores>Delete core dumps</button>
+    <select id=hksvc><option value="">restart a service…</option><option>airplay2source</option><option>spotifysource</option><option>tidalsource</option><option>cellbroker</option><option>ledmanager</option><option>pycalibrator</option><option>syng-agent</option></select></div>
   <p class=hint>Everything here is applied through the speaker's own state service (cloudsyncd PatchState) — the same path Syng's cloud uses — so celldirector, the spatialiser and the SyFi link react as they would to the app. Nothing resets, nothing touches volume.</p>
 </details></div>
 <div class=toast id=toast></div>
@@ -107,12 +180,12 @@ async function api(path,body,ip){ // ip: another cell (relayed through this one 
 const short=s=>(s||'').slice(-5);
 function renderMe(){
   const m=ME; $('#title').textContent=(m.room_name||'Not in a room')+(m.room_name?'':'');
-  $('#sub').textContent=`Cell ${short(m.serial)} · ${m.serial} · ${m.ip||'no IP'}`;
+  $('#sub').textContent=`${m.name?m.name+' · ':''}Cell ${short(m.serial)} · ${m.serial} · ${m.ip||'no IP'}`;
   $('#orb').className='orb '+((m.role||'').toLowerCase());
   const b=[];
   b.push(`<span class="badge role">${m.role||'standalone'}</span>`);
   b.push(`<span class="badge ${m.calibrated?'good':'warn'}">${m.calibrated?'calibrated':'not calibrated'}</span>`);
-  if(m.wifi&&m.wifi.ssid) b.push(`<span class=badge>Wi-Fi ${m.wifi.ssid}</span>`); else b.push(`<span class="badge warn">no Wi-Fi</span>`);
+  if(m.wifi&&m.wifi.ssid) b.push(`<span class=badge>Wi-Fi ${m.wifi.ssid}</span>`); else b.push(`<span class="badge warn">no Wi-Fi${m.room_name?' — join Wi-Fi below: a wired-only speaker cannot take a room role (the firmware waits for Wi-Fi)':''}</span>`);
   if(m.room_name) b.push(`<span class=badge>${(m.members||[]).length} in room</span>`);
   b.push(`<span class="badge ${m.cloud_blocked?'good':'warn'}">${m.cloud_blocked?'cloud blocked · offline mode':'Syng cloud reachable'}</span>`);
   if(m.syfiGood!=null&&m.role) b.push(`<span class="badge ${m.syfiGood?'good':''}">SyFi ${m.syfiGood?'ok':'—'}</span>`);
@@ -149,12 +222,13 @@ async function loadDiscover(){
   const rooms=DISC.rooms||[];
   $('#rooms').innerHTML=rooms.map(r=>{
     const mine=ME.room_id&&r.room_id===ME.room_id; const noRoom=r.room_id==='?';
-    const cells=r.cells.map(c=>`<div class="item ${c.isMe?'me':''}"><span class=grow><b>Cell ${short(c.serial)}</b> <span class=k>${c.ip}${c.isMe?' · this speaker':''}${c.stock?' · stock firmware (no agent)':''}</span></span>
-       <span class=k>${c.role||''}${c.calibrated?' · calibrated':''}</span>${c.isMe||!c.agent?'':`<a class="btn sm" href="http://${c.ip}:8080/setup">open</a>`}</div>`).join('');
+    const cells=r.cells.map(c=>`<div class="item ${c.isMe?'me':''}"><span class=grow><b>${c.name||('Cell '+short(c.serial))}</b> <span class=k>${c.name?short(c.serial)+' · ':''}${c.ip}${c.isMe?' · this speaker':''}${c.stock?' · stock firmware (no agent)':''}</span></span>
+       <span class=k>${c.role||''}${c.calibrated?' · calibrated':''}</span>${c.agent?`<button class="btn sm" data-ping="${c.serial}">ping</button>`:''}${c.isMe||!c.agent?'':`<a class="btn sm" href="http://${c.ip}:8080/setup">open</a>`}</div>`).join('');
     const title=noRoom?'Not in a room':(r.room_name||'(unnamed room)');
     const btn=(!mine&&!noRoom&&r.primary_ip)?`<button class="btn sm pri" data-join="${r.primary_ip}">Join this room with this speaker</button>`:(mine?'<small>your room</small>':'');
     return `<div class=room><h3><span>${title} <small>${r.cells.length} speaker${r.cells.length>1?'s':''}</small></span>${btn}</h3><div class=list>${cells}</div></div>`;
   }).join('')||'<div class=muted>No other speakers found.</div>';
+  $('#rooms').querySelectorAll('[data-ping]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{await api('/api/ping',{serial:b.dataset.ping});}catch(e){toast('Ping: '+e.message,true);}setTimeout(()=>b.disabled=false,3000);});
   $('#rooms').querySelectorAll('[data-join]').forEach(b=>b.onclick=async()=>{
     if(!confirm('Join the room via '+b.dataset.join+'? This speaker becomes a secondary there'+((ME.members||[]).length>1?' and leaves "'+ME.room_name+'"':'')+'.'))return;
     b.disabled=true;toast('Joining…');
@@ -172,96 +246,176 @@ $('#mkroom').onclick=async()=>{
   setTimeout(refreshAll,2500);
 };
 
-// ---------- layout map ----------
+// ---------- layout map: the Syng app's cell-mapping model ----------
+// The sound-field reference circle is the fixed frame (drawn at 0.85 of the view, front of the room up) and the speakers
+// sit at their normalised positions n = R(-rot)·(p - c)/r. Dragging the room, scrolling/pinching and twisting change the
+// circle (c, r, rot) so that the physical points under the pointers stay under them — the same solve the app's
+// RoomMappingGestureRecognizer does with one or two fingers. Changes preview live on the speakers (cellbroker
+// reference_circle override, like the app's ReferenceCircleUpdater) and are committed when the gesture ends.
 const cv=$('#map'), ctx=cv.getContext('2d');
-let view={cx:0,cy:0,ppm:80}, L=null, grab=null;
+let L=null, grab=null, hist=[], ptrs=new Map(), hiCell=null, snapInfo=null, gestureBase=null, inGesture=false, rafPending=false, hoverT=null;
+const DPR=()=>Math.min(2,window.devicePixelRatio||1);
+const S=()=>0.85*Math.min(cv.width,cv.height)/2;            // reference-circle radius in px
+const rad=d=>d*Math.PI/180, deg=r=>r*180/Math.PI, r2=v=>Math.round(v*100)/100;
+function rot2(x,y,a){const c=Math.cos(a),s=Math.sin(a);return [c*x-s*y,s*x+c*y];}
+function toN(x,y,rc){rc=rc||L.rc; const [dx,dy]=rot2(x-rc.x,y-rc.y,-rad(rc.rot)); return [dx/rc.r,dy/rc.r];}       // physical m -> circle units
+function toP(nx,ny,rc){rc=rc||L.rc; const [dx,dy]=rot2(nx*rc.r,ny*rc.r,rad(rc.rot)); return [rc.x+dx,rc.y+dy];}  // circle units -> physical m
+const nToPx=(nx,ny)=>[cv.width/2+nx*S(), cv.height/2-ny*S()];
+const pxToN=(px,py)=>[(px-cv.width/2)/S(), -(py-cv.height/2)/S()];
+const toPx=(x,y)=>{const [nx,ny]=toN(x,y);return nToPx(nx,ny);};
 function fromRoom(){ // ROOM -> editable layout model
   const rs=ROOM.room_state||{}; const rc=rs.reference_circle||{x_m:0,y_m:0,radius_m:1,rotation_deg:0}; const lp=rs.listener_position||{x_m:0,y_m:0};
-  L={cells:ROOM.cells.map(c=>({serial:c.serial,ip:c.ip,role:c.role,x:+(c.position.x||0),y:+(c.position.y||0),z:+(c.position.z||1.5),rot:+(c.position.rotation||0),
+  L={cells:ROOM.cells.map(c=>({serial:c.serial,name:c.name||'',ip:c.ip,role:c.role,x:+(c.position.x||0),y:+(c.position.y||0),z:+(c.position.z||1.5),rot:+(c.position.rotation||0),
       ud:!!c.is_upside_down,hl:+(c.height_layer||0),cal:!!c.calibrated,isMe:c.isMe,online:c.online,walls:c.nearby_walls||[]})),
-     rc:{x:+rc.x_m,y:+rc.y_m,r:+rc.radius_m,rot:+rc.rotation_deg}, lis:{x:+lp.x_m,y:+lp.y_m}};
-  fitView(); dirty=false; $('#save').disabled=true;
+     rc:{x:+rc.x_m,y:+rc.y_m,r:Math.max(0.4,+rc.radius_m||1),rot:+rc.rotation_deg||0}, lis:{x:+lp.x_m,y:+lp.y_m}};
+  dirty=false; $('#save').disabled=true;
 }
-function fitView(){
-  const xs=[],ys=[]; L.cells.forEach(c=>{xs.push(c.x);ys.push(c.y);}); xs.push(L.rc.x-L.rc.r,L.rc.x+L.rc.r); ys.push(L.rc.y-L.rc.r,L.rc.y+L.rc.r);
-  const minx=Math.min(...xs),maxx=Math.max(...xs),miny=Math.min(...ys),maxy=Math.max(...ys);
-  const W=cv.width,H=cv.height; view.cx=(minx+maxx)/2; view.cy=(miny+maxy)/2;
-  view.ppm=Math.min(W/Math.max(1,(maxx-minx)+1.6),H/Math.max(1,(maxy-miny)+1.6));
+function sizeCanvas(){const w=cv.clientWidth||600; const dpr=DPR(); cv.width=Math.round(w*dpr); cv.height=Math.round(Math.min(560,Math.max(300,w*0.78))*dpr); cv.style.height=(cv.height/dpr)+'px'; draw();}
+function clampCircle(rc){rc.r=Math.max(0.4,Math.min(12,rc.r)); rc.rot=((rc.rot%360)+360)%360; return rc;}
+function circleBody(){return {x_m:r2(L.rc.x),y_m:r2(L.rc.y),radius_m:r2(L.rc.r),rotation_deg:Math.round(L.rc.rot*10)/10};}
+const DIRTY={rc:false,lis:false,cells:new Set()};   // only what this page changed goes to the room (another page or the agent may have moved the rest)
+function layoutBody(){const b={cells:{}}; if(DIRTY.rc)b.reference_circle=circleBody(); if(DIRTY.lis)b.listener_position={x_m:r2(L.lis.x),y_m:r2(L.lis.y)};
+  L.cells.forEach(c=>{if(DIRTY.cells.has(c.serial))b.cells[c.serial]={x:c.x,y:c.y,z:c.z,rotation:c.rot,is_upside_down:c.ud,height_layer:c.hl};}); return b;}
+function clearDirty(){DIRTY.rc=false;DIRTY.lis=false;DIRTY.cells.clear();}
+// --- history (undo) ---
+function pushHist(){if(!L)return; const now=performance.now(); if(hist.length&&now-hist[hist.length-1].t<800)return;
+  hist.push({t:now,s:JSON.stringify({cells:L.cells.map(c=>({x:c.x,y:c.y,rot:c.rot})),rc:L.rc,lis:L.lis})}); if(hist.length>40)hist.shift(); $('#undo').disabled=false;}
+function undo(){const h=hist.pop(); if(!h)return; const o=JSON.parse(h.s); o.cells.forEach((p,i)=>{if(L.cells[i]){Object.assign(L.cells[i],p);DIRTY.cells.add(L.cells[i].serial);}}); L.rc=o.rc; L.lis=o.lis; DIRTY.rc=true; DIRTY.lis=true; $('#undo').disabled=!hist.length; changed(true); scheduleCommit();}
+// --- live preview + commit ---
+let pvT=0,pvPending=false,cmT=null;
+function schedulePreview(){const now=performance.now(); if(now-pvT>90){pvT=now;sendPreview();} else if(!pvPending){pvPending=true;setTimeout(()=>{pvPending=false;pvT=performance.now();sendPreview();},90-(now-pvT));}}
+function sendPreview(){if(!L)return; api('/api/room/preview',{reference_circle:circleBody()},primaryIp).catch(()=>{});}
+function scheduleCommit(){clearTimeout(cmT); cmT=setTimeout(commit,500);}
+async function commit(){if(!L||!dirty)return; clearTimeout(cmT);
+  try{const body=layoutBody(); const r=await api('/api/room/layout',body,primaryIp); dirty=false; clearDirty(); $('#save').disabled=true; const n=Object.values(r.fanout||{}).filter(v=>v===true).length; $('#savestate').textContent='saved · '+n+' speaker'+(n===1?'':'s')+' updated';}
+  catch(e){toast('Save failed: '+e.message,true);}}
+function changed(circle){dirty=true; if(circle)DIRTY.rc=true; $('#save').disabled=false; $('#savestate').textContent='unsaved'; draw(); renderTable(false); if(circle)schedulePreview();}
+// --- the room gesture solve: keep the physical anchor under each pointer ---
+function solveRoom(){
+  const a=[...ptrs.values()]; if(!a.length)return; const rc={...L.rc};
+  if(a.length===1){const p=a[0];
+    if(p.alt){const a0=Math.atan2(p.n0[1],p.n0[0]), a1=Math.atan2(p.n[1],p.n[0]); rc.rot=p.rot0-deg(a1-a0);}       // ⌥-drag: twist about the centre
+    else {const [dx,dy]=rot2(p.n[0]*rc.r,p.n[1]*rc.r,rad(rc.rot)); rc.x=p.P[0]-dx; rc.y=p.P[1]-dy;}                 // drag: pan
+  } else {const [p,q]=a; const dP=[q.P[0]-p.P[0],q.P[1]-p.P[1]], dN=[q.n[0]-p.n[0],q.n[1]-p.n[1]]; const lN=Math.hypot(dN[0],dN[1]); if(lN<1e-4)return;
+    rc.r=Math.hypot(dP[0],dP[1])/lN; rc.rot=deg(Math.atan2(dP[1],dP[0])-Math.atan2(dN[1],dN[0])); clampCircle(rc);        // two fingers: pan + pinch + twist
+    const [dx,dy]=rot2(p.n[0]*rc.r,p.n[1]*rc.r,rad(rc.rot)); rc.x=p.P[0]-dx; rc.y=p.P[1]-dy;}
+  L.rc=clampCircle(rc); settle(); changed(true);
 }
-const toPx=(x,y)=>[cv.width/2+(x-view.cx)*view.ppm, cv.height/2-(y-view.cy)*view.ppm];
-const toM=(px,py)=>[(px-cv.width/2)/view.ppm+view.cx, -(py-cv.height/2)/view.ppm+view.cy];
-function sizeCanvas(){const w=cv.clientWidth||600; const dpr=Math.min(2,window.devicePixelRatio||1); cv.width=Math.round(w*dpr); cv.height=Math.round(Math.min(520,w*0.72)*dpr); cv.style.height=(cv.height/dpr)+'px'; if(L)fitView(); draw();}
+function settle(){ // after a gesture: if a speaker left the view, grow the circle until it is back (the app rubber-bands the same way)
+  let m=0; L.cells.forEach(c=>{const [nx,ny]=toN(c.x,c.y); m=Math.max(m,Math.hypot(nx,ny));});
+  if(m>1.16){L.rc.r=Math.min(12,L.rc.r*m/1.16); changed(true);}
+}
+function scaleAt(px,py,f){const n=pxToN(px,py); const P=toP(n[0],n[1]); const r0=L.rc.r; L.rc.r=L.rc.r/f; clampCircle(L.rc); const [dx,dy]=rot2(n[0]*L.rc.r,n[1]*L.rc.r,rad(L.rc.rot)); L.rc.x=P[0]-dx; L.rc.y=P[1]-dy;
+  if(f>1&&!allInView()){L.rc.r=r0; const [dx2,dy2]=rot2(n[0]*r0,n[1]*r0,rad(L.rc.rot)); L.rc.x=P[0]-dx2; L.rc.y=P[1]-dy2;}}   // zooming in stops when a speaker would leave the view
+function allInView(){return L.cells.every(c=>{const [nx,ny]=toN(c.x,c.y); return Math.hypot(nx,ny)<=1.16;});}
+function rotateBy(d){pushHist(); const from=L.rc.rot, t0=performance.now(); const step=()=>{const k=Math.min(1,(performance.now()-t0)/260), e=1-Math.pow(1-k,3); L.rc.rot=from+d*e; clampCircle(L.rc); changed(true); if(k<1)requestAnimationFrame(step); else scheduleCommit();}; step();}
+// --- drawing ---
 function draw(){
-  if(!L)return; const W=cv.width,H=cv.height,dpr=Math.min(2,window.devicePixelRatio||1); ctx.clearRect(0,0,W,H);
+  if(!L)return; const W=cv.width,H=cv.height,dpr=DPR(),s=S(); ctx.clearRect(0,0,W,H);
   const css=getComputedStyle(document.documentElement); const C={muted:css.getPropertyValue('--muted').trim(),text:css.getPropertyValue('--text').trim(),acc:css.getPropertyValue('--accent').trim(),live:css.getPropertyValue('--live').trim(),warn:css.getPropertyValue('--warn').trim(),line:css.getPropertyValue('--line').trim()};
-  // grid 0.5 m
-  ctx.lineWidth=1; ctx.strokeStyle=C.line; ctx.globalAlpha=.7;
-  const [mx0,my1]=toM(0,0),[mx1,my0]=toM(W,H);
-  for(let x=Math.floor(mx0*2)/2;x<=mx1;x+=0.5){const [px]=toPx(x,0);ctx.beginPath();ctx.moveTo(px,0);ctx.lineTo(px,H);ctx.stroke();}
-  for(let y=Math.floor(my0*2)/2;y<=my1;y+=0.5){const [,py]=toPx(0,y);ctx.beginPath();ctx.moveTo(0,py);ctx.lineTo(W,py);ctx.stroke();}
+  const cx=W/2, cy=H/2;
+  // metre rings around the circle centre (physical scale), faint
+  ctx.lineWidth=1; ctx.strokeStyle=C.line; ctx.globalAlpha=.55;
+  for(let k=0.5;k/L.rc.r*s<Math.hypot(W,H)/2;k+=0.5){ctx.beginPath();ctx.arc(cx,cy,k/L.rc.r*s,0,Math.PI*2);ctx.globalAlpha=(k%1===0)?.55:.25;ctx.stroke();}
   ctx.globalAlpha=1;
-  // reference circle
-  const [rx,ry]=toPx(L.rc.x,L.rc.y), rr=L.rc.r*view.ppm;
-  ctx.setLineDash([6*dpr,5*dpr]); ctx.strokeStyle=C.acc; ctx.lineWidth=1.5*dpr; ctx.beginPath(); ctx.arc(rx,ry,rr,0,Math.PI*2); ctx.stroke(); ctx.setLineDash([]);
-  // rotation handle: the "front" of the circle (rotation_deg, CCW from +x; front = +90)
-  const fa=(90+L.rc.rot)*Math.PI/180; const hx=rx+Math.cos(fa)*rr, hy=ry-Math.sin(fa)*rr;
-  ctx.fillStyle=C.acc; ctx.beginPath(); ctx.moveTo(hx,hy-7*dpr);ctx.lineTo(hx+7*dpr,hy);ctx.lineTo(hx,hy+7*dpr);ctx.lineTo(hx-7*dpr,hy);ctx.closePath();ctx.fill();
-  ctx.beginPath(); ctx.arc(rx,ry,4*dpr,0,Math.PI*2); ctx.fill();
+  // the reference circle (fixed) + front marker
+  ctx.setLineDash([6*dpr,5*dpr]); ctx.strokeStyle=C.acc; ctx.lineWidth=1.5*dpr; ctx.beginPath(); ctx.arc(cx,cy,s,0,Math.PI*2); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle=C.acc; ctx.beginPath(); ctx.moveTo(cx,cy-s-9*dpr);ctx.lineTo(cx+6*dpr,cy-s+1*dpr);ctx.lineTo(cx-6*dpr,cy-s+1*dpr);ctx.closePath();ctx.fill();
+  ctx.globalAlpha=.6; ctx.beginPath(); ctx.arc(cx,cy,3*dpr,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1;
+  ctx.fillStyle=C.muted; ctx.font=`${11*dpr}px system-ui`; ctx.textAlign='center'; ctx.fillText('front',cx,cy-s-14*dpr);
   // listener
   const [lx,ly]=toPx(L.lis.x,L.lis.y); ctx.strokeStyle=C.text; ctx.lineWidth=1.5*dpr; ctx.beginPath(); ctx.arc(lx,ly,9*dpr,0,Math.PI*2); ctx.stroke(); ctx.beginPath(); ctx.arc(lx,ly,3*dpr,0,Math.PI*2); ctx.fillStyle=C.text; ctx.fill();
   // cells
+  const now=performance.now();
   L.cells.forEach(c=>{
-    const [px,py]=toPx(c.x,c.y), R=14*dpr;
-    // walls
-    (c.walls||[]).forEach(w=>{ if(!w.close_to_wall&&w.likelihood<0.5)return; const a=(c.rot+ (w.angle_deg||0))*Math.PI/180; const d=(w.distance_m||0.5)*view.ppm; const wx=px+Math.cos(a)*d, wy=py-Math.sin(a)*d;
+    const [px,py]=toPx(c.x,c.y), R=18*dpr, sa=rad(c.rot-L.rc.rot); // screen angle of the speaker's front
+    (c.walls||[]).forEach(w=>{ if(!w.close_to_wall&&w.likelihood<0.5)return; const a=sa+rad(w.angle_deg||0); const d=(w.distance_m||0.5)/L.rc.r*s; const wx=px+Math.cos(a)*d, wy=py-Math.sin(a)*d;
       ctx.strokeStyle=C.warn; ctx.globalAlpha=Math.min(1,w.likelihood||0.5); ctx.lineWidth=3*dpr; ctx.beginPath(); ctx.moveTo(wx+Math.cos(a+Math.PI/2)*16*dpr,wy-Math.sin(a+Math.PI/2)*16*dpr); ctx.lineTo(wx-Math.cos(a+Math.PI/2)*16*dpr,wy+Math.sin(a+Math.PI/2)*16*dpr); ctx.stroke(); ctx.globalAlpha=1; });
-    ctx.fillStyle=c.isMe?C.acc:(c.online?C.live:C.muted); ctx.globalAlpha=c.cal?1:.55; ctx.beginPath(); ctx.arc(px,py,R,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1;
-    if(grab&&grab.c===c){ctx.strokeStyle=C.text;ctx.lineWidth=2*dpr;ctx.stroke();}
-    // orientation tick (rotation CCW from +x)
-    const a=c.rot*Math.PI/180; ctx.strokeStyle=C.text; ctx.lineWidth=2.5*dpr; ctx.beginPath(); ctx.moveTo(px+Math.cos(a)*R*0.6,py-Math.sin(a)*R*0.6); ctx.lineTo(px+Math.cos(a)*R*1.9,py-Math.sin(a)*R*1.9); ctx.stroke();
-    ctx.beginPath(); ctx.arc(px+Math.cos(a)*R*1.9,py-Math.sin(a)*R*1.9,4*dpr,0,Math.PI*2); ctx.fillStyle=C.text; ctx.fill();
-    ctx.fillStyle=C.text; ctx.font=`${11*dpr}px system-ui`; ctx.textAlign='center'; ctx.fillText(short(c.serial)+(c.role==='primary'?' ★':''),px,py+R+12*dpr);
+    if(hiCell===c.serial){const k=(now/1200)%1; ctx.strokeStyle=C.acc; ctx.globalAlpha=1-k; ctx.lineWidth=2*dpr; ctx.beginPath(); ctx.arc(px,py,R+6*dpr+k*22*dpr,0,Math.PI*2); ctx.stroke(); ctx.globalAlpha=1;}
+    ctx.globalAlpha=c.cal?1:.6; const g=ctx.createRadialGradient(px-R*.25,py-R*.3,R*.1,px,py,R); g.addColorStop(0,'#3b3b3b'); g.addColorStop(1,'#070707');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(px,py,R,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle=c.online?'#555':'#333'; ctx.lineWidth=1*dpr; ctx.stroke();
+    ctx.fillStyle='#e3a24c'; [[0,-.3],[-.26,.17],[.26,.17]].forEach(([ox,oy])=>{ctx.beginPath();ctx.arc(px+ox*R,py+oy*R,R*.11,0,Math.PI*2);ctx.fill();}); ctx.globalAlpha=1;
+    if(c.isMe){ctx.strokeStyle=C.text;ctx.lineWidth=1.5*dpr;ctx.beginPath();ctx.arc(px,py,R+3*dpr,0,Math.PI*2);ctx.stroke();}
+    if(grab&&grab.c===c){ctx.strokeStyle=C.text;ctx.lineWidth=2*dpr;ctx.beginPath();ctx.arc(px,py,R,0,Math.PI*2);ctx.stroke();}
+    ctx.strokeStyle=C.text; ctx.lineWidth=2.5*dpr; ctx.beginPath(); ctx.moveTo(px+Math.cos(sa)*R*0.6,py-Math.sin(sa)*R*0.6); ctx.lineTo(px+Math.cos(sa)*R*1.9,py-Math.sin(sa)*R*1.9); ctx.stroke();
+    ctx.beginPath(); ctx.arc(px+Math.cos(sa)*R*1.9,py-Math.sin(sa)*R*1.9,4*dpr,0,Math.PI*2); ctx.fillStyle=C.text; ctx.fill();
+    ctx.fillStyle=C.text; ctx.font=`500 ${11*dpr}px Graphik,system-ui`; ctx.textAlign='center'; ctx.fillText((c.name||short(c.serial))+(c.role==='primary'?' ★':''),px,py+R+12*dpr);
     if(c.ud){ctx.fillStyle=C.muted; ctx.fillText('⤒ ceiling',px,py+R+24*dpr);}
+    if(grab&&grab.c===c&&snapInfo){ctx.fillStyle=C.acc; ctx.fillText(snapInfo==='centre'?'⌖ centre':'▭ wall',px,py-R-8*dpr);}
   });
-  ctx.fillStyle=C.muted; ctx.font=`${11*dpr}px system-ui`; ctx.textAlign='left'; ctx.fillText('1 m = '+Math.round(view.ppm/dpr)+' px · front ↑',8*dpr,H-8*dpr);
+  // scale bar + circle readout
+  let bar=1; while(bar/L.rc.r*s>W*0.4)bar/=2; const bl=bar/L.rc.r*s;
+  ctx.strokeStyle=C.muted; ctx.lineWidth=1.5*dpr; ctx.beginPath(); ctx.moveTo(10*dpr,H-10*dpr); ctx.lineTo(10*dpr+bl,H-10*dpr); ctx.stroke();
+  ctx.fillStyle=C.muted; ctx.font=`${11*dpr}px system-ui`; ctx.textAlign='left'; ctx.fillText(bar+' m',10*dpr,H-15*dpr);
+  ctx.textAlign='right'; ctx.fillText('circle r '+L.rc.r.toFixed(2)+' m · '+Math.round(L.rc.rot)+'°',W-10*dpr,H-10*dpr);
+  if(hiCell&&!rafPending){rafPending=true;requestAnimationFrame(()=>{rafPending=false;draw();});}
 }
 function pick(px,py){
-  const dpr=Math.min(2,window.devicePixelRatio||1);
-  for(const c of L.cells){const [cx,cy]=toPx(c.x,c.y); const a=c.rot*Math.PI/180; const tx=cx+Math.cos(a)*14*dpr*1.9, ty=cy-Math.sin(a)*14*dpr*1.9;
+  const dpr=DPR();
+  for(const c of L.cells){const [cx,cy]=toPx(c.x,c.y); const a=rad(c.rot-L.rc.rot); const tx=cx+Math.cos(a)*18*dpr*1.9, ty=cy-Math.sin(a)*18*dpr*1.9;
     if(Math.hypot(px-tx,py-ty)<10*dpr) return {t:'rot',c}; }
-  for(const c of L.cells){const [cx,cy]=toPx(c.x,c.y); if(Math.hypot(px-cx,py-cy)<16*dpr) return {t:'cell',c};}
+  for(const c of L.cells){const [cx,cy]=toPx(c.x,c.y); if(Math.hypot(px-cx,py-cy)<20*dpr) return {t:'cell',c};}
   const [lx,ly]=toPx(L.lis.x,L.lis.y); if(Math.hypot(px-lx,py-ly)<12*dpr) return {t:'lis'};
-  const [rx,ry]=toPx(L.rc.x,L.rc.y), rr=L.rc.r*view.ppm; const fa=(90+L.rc.rot)*Math.PI/180;
-  if(Math.hypot(px-(rx+Math.cos(fa)*rr),py-(ry-Math.sin(fa)*rr))<12*dpr) return {t:'rcrot'};
-  if(Math.hypot(px-rx,py-ry)<10*dpr) return {t:'rcc'};
-  if(Math.abs(Math.hypot(px-rx,py-ry)-rr)<8*dpr) return {t:'rcr'};
-  return {t:'pan'};
+  return {t:'room'};
 }
 function evpos(e){const r=cv.getBoundingClientRect(); const dpr=cv.width/r.width; return [(e.clientX-r.left)*dpr,(e.clientY-r.top)*dpr];}
-cv.addEventListener('pointerdown',e=>{if(!L)return; cv.setPointerCapture(e.pointerId); const [px,py]=evpos(e); grab=pick(px,py); grab.px=px;grab.py=py;grab.view={...view}; if(grab.t==='rcr')grab.r0=L.rc.r; draw();});
-cv.addEventListener('pointermove',e=>{if(!grab)return; const [px,py]=evpos(e); const [mx,my]=toM(px,py);
-  if(grab.t==='cell'){grab.c.x=Math.round(mx*100)/100;grab.c.y=Math.round(my*100)/100;}
-  else if(grab.t==='rot'){grab.c.rot=Math.round(Math.atan2(-(py-toPx(grab.c.x,grab.c.y)[1]),px-toPx(grab.c.x,grab.c.y)[0])*180/Math.PI*10)/10;}
-  else if(grab.t==='lis'){L.lis.x=Math.round(mx*100)/100;L.lis.y=Math.round(my*100)/100;}
-  else if(grab.t==='rcc'){L.rc.x=Math.round(mx*100)/100;L.rc.y=Math.round(my*100)/100;}
-  else if(grab.t==='rcr'){L.rc.r=Math.max(0.5,Math.round(Math.hypot(mx-L.rc.x,my-L.rc.y)*100)/100);}
-  else if(grab.t==='rcrot'){L.rc.rot=Math.round(((Math.atan2(my-L.rc.y,mx-L.rc.x)*180/Math.PI-90)+3600)%360*10)/10;}
-  else if(grab.t==='pan'){view.cx=grab.view.cx-(px-grab.px)/view.ppm; view.cy=grab.view.cy+(py-grab.py)/view.ppm; draw(); return;}
-  dirty=true; $('#save').disabled=false; draw(); renderTable(false);});
-const up=()=>{grab=null;draw();}; cv.addEventListener('pointerup',up); cv.addEventListener('pointercancel',up);
-cv.addEventListener('wheel',e=>{e.preventDefault(); view.ppm=Math.max(20,Math.min(400,view.ppm*(e.deltaY<0?1.1:0.9))); draw();},{passive:false});
+cv.addEventListener('pointerdown',e=>{if(!L)return; try{cv.setPointerCapture(e.pointerId);}catch(_){} cv.focus(); const [px,py]=evpos(e); const n=pxToN(px,py);
+  if(ptrs.size===0&&!grab){grab=pick(px,py); pushHist();}
+  else if(grab&&grab.t!=='room') return;                                  // a second finger during a speaker drag is ignored
+  else grab={t:'room'};
+  if(grab.t==='room'){ptrs.set(e.pointerId,{n,n0:n,P:toP(n[0],n[1]),alt:e.altKey,rot0:L.rc.rot}); inGesture=true; cv.style.cursor='grabbing';}
+  else grab.id=e.pointerId;
+  draw();});
+cv.addEventListener('pointermove',e=>{if(!L)return; const [px,py]=evpos(e); const n=pxToN(px,py);
+  if(ptrs.has(e.pointerId)){ptrs.get(e.pointerId).n=n; solveRoom(); return;}
+  if(!grab||grab.id!==e.pointerId){const h=pick(px,py); cv.style.cursor=h.t==='room'?'grab':(h.t==='rot'?'crosshair':'move'); return;}
+  if(grab.t==='cell'){let [nx,ny]=n; snapInfo=null; if(!e.shiftKey){const d=Math.hypot(nx,ny); if(d<0.09){nx=0;ny=0;snapInfo='centre';} else if(Math.abs(d-1)<0.07){nx/=d;ny/=d;snapInfo='wall';}}
+    const [x,y]=toP(nx,ny); grab.c.x=r2(x); grab.c.y=r2(y); DIRTY.cells.add(grab.c.serial);}
+  else if(grab.t==='rot'){const [cx,cy]=toPx(grab.c.x,grab.c.y); grab.c.rot=Math.round((((deg(Math.atan2(-(py-cy),px-cx))+L.rc.rot)%360)+360)%360*10)/10; DIRTY.cells.add(grab.c.serial);}
+  else if(grab.t==='lis'){const [x,y]=toP(n[0],n[1]); L.lis.x=r2(x); L.lis.y=r2(y); DIRTY.lis=true;}
+  changed(false);});
+const up=e=>{if(!L)return;
+  if(ptrs.has(e.pointerId)){ptrs.delete(e.pointerId); ptrs.forEach(p=>{p.n0=p.n;p.P=toP(p.n[0],p.n[1]);p.rot0=L.rc.rot;}); if(!ptrs.size){inGesture=false; grab=null; settle(); scheduleCommit(); cv.style.cursor='grab';}}
+  else if(grab&&grab.id===e.pointerId){grab=null; snapInfo=null; scheduleCommit();}
+  draw();};
+cv.addEventListener('pointerup',up); cv.addEventListener('pointercancel',up);
+let wheelT=null;
+cv.addEventListener('wheel',e=>{e.preventDefault(); if(!L||inGesture||gestureBase)return; const [px,py]=evpos(e); pushHist();
+  if(e.shiftKey){L.rc.rot+=Math.max(-6,Math.min(6,(Math.abs(e.deltaX)>Math.abs(e.deltaY)?e.deltaX:e.deltaY)*0.08)); clampCircle(L.rc);}          // ⇧-scroll: twist
+  else {const k=e.ctrlKey?0.012:0.0016; scaleAt(px,py,Math.max(0.94,Math.min(1.06,Math.exp(-Math.max(-120,Math.min(120,e.deltaY))*k))));}   // scroll / trackpad pinch: ≤6 % per tick, so momentum can't run away
+  changed(true); clearTimeout(wheelT); wheelT=setTimeout(()=>{settle(); scheduleCommit();},300);},{passive:false});
+// Safari trackpads: real pinch + twist, exactly the app's two-finger gesture
+cv.addEventListener('gesturestart',e=>{e.preventDefault(); if(!L)return; const [px,py]=evpos(e); const n=pxToN(px,py); gestureBase={r:L.rc.r,rot:L.rc.rot,n,P:toP(n[0],n[1])}; pushHist();});
+cv.addEventListener('gesturechange',e=>{e.preventDefault(); if(!gestureBase||!L)return; L.rc.r=gestureBase.r/(e.scale||1); L.rc.rot=gestureBase.rot+(e.rotation||0); clampCircle(L.rc);
+  const [dx,dy]=rot2(gestureBase.n[0]*L.rc.r,gestureBase.n[1]*L.rc.r,rad(L.rc.rot)); L.rc.x=gestureBase.P[0]-dx; L.rc.y=gestureBase.P[1]-dy; settle(); changed(true);});
+cv.addEventListener('gestureend',e=>{e.preventDefault(); gestureBase=null; if(L){settle(); scheduleCommit();}});
+cv.addEventListener('keydown',e=>{if(!L)return; const big=e.shiftKey; let h=true;
+  if(e.key==='ArrowLeft'){pushHist();L.rc.rot-=big?15:1;} else if(e.key==='ArrowRight'){pushHist();L.rc.rot+=big?15:1;}
+  else if(e.key==='+'||e.key==='='){pushHist();scaleAt(cv.width/2,cv.height/2,1.05);} else if(e.key==='-'){pushHist();scaleAt(cv.width/2,cv.height/2,1/1.05);}
+  else if((e.key==='z'||e.key==='Z')&&(e.metaKey||e.ctrlKey)){undo();return;} else if(e.key==='r'){rotateBy(90);return;} else if(e.key==='R'){rotateBy(-90);return;} else h=false;
+  if(h){e.preventDefault(); clampCircle(L.rc); changed(true); scheduleCommit();}});
+$('#rotl').onclick=()=>rotateBy(90); $('#rotr').onclick=()=>rotateBy(-90); $('#undo').onclick=undo;
+let idTimer=null, idIdx=0;
+$('#identify').onclick=()=>{ if(idTimer){clearInterval(idTimer);idTimer=null;hiCell=null;$('#identify').classList.remove('live');$('#identify').textContent='Identify in turn';draw();return;}
+  $('#identify').classList.add('live'); $('#identify').textContent='Stop identifying';
+  const step=()=>{if(!L||!L.cells.length)return; idIdx=idIdx%L.cells.length; hiCell=L.cells[idIdx].serial; idIdx++; api('/api/ping',{serial:hiCell}).catch(()=>{}); draw();};
+  step(); idTimer=setInterval(step,2600); };
 
 function renderTable(full=true){
   if(!L)return;
   if(full){$('#cells').innerHTML='<tr><th>SPEAKER</th><th>ROLE</th><th>X m</th><th>Y m</th><th>Z m</th><th>TURN °</th><th>CEILING</th><th>LAYER</th><th></th></tr>'+L.cells.map((c,i)=>`<tr data-i=${i}>
-    <td><b>${short(c.serial)}</b>${c.isMe?' <span class=muted>(this)</span>':''}<div class=muted>${c.ip}${c.cal?'':' · uncalibrated'}</div></td>
+    <td><b>${c.name||short(c.serial)}</b>${c.isMe?' <span class=muted>(this)</span>':''} <button class="btn sm" data-nm=${i} title="Name this speaker" style="padding:2px 7px;font-size:11px">name</button><div class=muted>${c.name?short(c.serial)+' · ':''}${c.ip}${c.cal?'':' · uncalibrated'}</div></td>
     <td>${c.role||''}${c.role!=='primary'?` <button class="btn sm" data-pin=${i}>make primary</button>`:''}</td>
     <td><input type=number step=0.01 data-f=x value="${c.x}"></td><td><input type=number step=0.01 data-f=y value="${c.y}"></td><td><input type=number step=0.05 data-f=z value="${c.z}"></td>
     <td><input type=number step=1 data-f=rot value="${c.rot}"></td>
     <td><input type=checkbox data-f=ud ${c.ud?'checked':''}></td>
     <td><select data-f=hl><option value=0 ${c.hl==0?'selected':''}>0 · floor/shelf</option><option value=1 ${c.hl==1?'selected':''}>1 · mid</option><option value=2 ${c.hl==2?'selected':''}>2 · high/ceiling</option></select></td>
-    <td>${L.cells.length>1?`<button class="btn sm danger" data-rm=${i}>remove</button>`:''}</td></tr>`).join('');
-    $('#cells').querySelectorAll('input,select').forEach(el=>el.onchange=()=>{const c=L.cells[+el.closest('tr').dataset.i]; const f=el.dataset.f; c[f]=f==='ud'?el.checked:+el.value; dirty=true;$('#save').disabled=false; draw();});
+    <td style="white-space:nowrap"><button class="btn sm" data-ping="${c.serial}">ping</button> ${L.cells.length>1?`<button class="btn sm danger" data-rm=${i}>remove</button>`:''}</td></tr>`).join('');
+    $('#cells').querySelectorAll('[data-ping]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{await api('/api/ping',{serial:b.dataset.ping});}catch(e){toast('Ping: '+e.message,true);}setTimeout(()=>b.disabled=false,3000);});
+    $('#cells').querySelectorAll('input,select').forEach(el=>el.onchange=()=>{const c=L.cells[+el.closest('tr').dataset.i]; const f=el.dataset.f; c[f]=f==='ud'?el.checked:+el.value; DIRTY.cells.add(c.serial); dirty=true;$('#save').disabled=false; $('#savestate').textContent='unsaved'; draw();});
+    $('#cells').querySelectorAll('[data-nm]').forEach(b=>b.onclick=async()=>{const c=L.cells[+b.dataset.nm]; const n=prompt('Name for '+short(c.serial)+' (empty to clear)',c.name||''); if(n===null)return;
+      try{await api('/api/cell/name',{serial:c.serial,name:n},primaryIp);toast(n?'Named '+n:'Name cleared');}catch(e){toast(e.message,true);} setTimeout(loadRoom,800);});
     $('#cells').querySelectorAll('[data-rm]').forEach(b=>b.onclick=async()=>{const c=L.cells[+b.dataset.rm]; if(!confirm('Remove Cell '+short(c.serial)+' from "'+(ROOM.room_state.room_name)+'"? It becomes a room of its own.'))return;
       try{await api('/api/room/remove',{serial:c.serial},primaryIp);toast('Removed');}catch(e){toast('Remove failed: '+e.message,true);} setTimeout(refreshAll,2000);});
     $('#cells').querySelectorAll('[data-pin]').forEach(b=>b.onclick=async()=>{const c=L.cells[+b.dataset.pin]; if(!confirm('Make Cell '+short(c.serial)+' the primary? Playback pauses for a moment while the room re-elects.'))return;
@@ -270,28 +424,27 @@ function renderTable(full=true){
     $('#cells').querySelectorAll('tr[data-i]').forEach(tr=>{const c=L.cells[+tr.dataset.i]; tr.querySelectorAll('input[type=number]').forEach(inp=>{inp.value=c[inp.dataset.f];});});
   }
 }
-$('#save').onclick=async()=>{
-  const body={cells:{},reference_circle:{x_m:L.rc.x,y_m:L.rc.y,radius_m:L.rc.r,rotation_deg:L.rc.rot},listener_position:{x_m:L.lis.x,y_m:L.lis.y}};
-  L.cells.forEach(c=>body.cells[c.serial]={x:c.x,y:c.y,z:c.z,rotation:c.rot,is_upside_down:c.ud,height_layer:c.hl});
-  try{const r=await api('/api/room/layout',body,primaryIp); toast('Layout saved · '+Object.values(r.fanout||{}).filter(v=>v===true).length+'/'+Object.keys(r.fanout||{}).length+' speakers updated'); dirty=false;$('#save').disabled=true;}
-  catch(e){toast('Save failed: '+e.message,true);}
-  setTimeout(loadRoom,1200);
-};
+$('#save').onclick=async()=>{await commit(); toast($('#savestate').textContent||'saved'); setTimeout(loadRoom,800);};
 $('#autocircle').onclick=async()=>{try{await api('/api/room/layout',{auto_circle:true,auto_listener:true},primaryIp);toast('Circle & listener recomputed');}catch(e){toast(e.message,true);} setTimeout(loadRoom,800);};
 $('#rename').onclick=async()=>{const n=prompt('Room name',ROOM.room_state.room_name||'');if(!n)return;try{await api('/api/room/rename',{name:n},primaryIp);toast('Renamed');}catch(e){toast(e.message,true);} setTimeout(refreshAll,1000);};
 let calTimer=null;
 $('#calib').onclick=async()=>{
   if(!confirm('Run Soundcheck now? Every speaker will play measurement chirps (at a moderate level) for a few minutes. Keep the room quiet.'))return;
-  try{const r=await api('/api/calibration/run',null,primaryIp); if(r.ok===false)throw new Error(r.error||'busy'); toast('Soundcheck started'); pollCal();}catch(e){toast('Soundcheck: '+e.message,true);}
+  try{const r=await api('/api/calibration/run',{runs:1},primaryIp); if(r.ok===false)throw new Error(r.error||'busy'); toast('Soundcheck started'); pollCal();}catch(e){toast('Soundcheck: '+e.message,true);}
+};
+$('#calib3').onclick=async()=>{
+  if(!confirm('Run Soundcheck three times and combine the measurements? Playback is paused for the duration (about three times a normal Soundcheck). Keep the room quiet.'))return;
+  try{const r=await api('/api/calibration/run',{runs:3},primaryIp); if(r.ok===false)throw new Error(r.error||'busy'); toast('Soundcheck ×3 started'); pollCal();}catch(e){toast('Soundcheck: '+e.message,true);}
 };
 async function pollCal(){
   clearTimeout(calTimer);
   try{const s=await api('/api/calibration/status',null,primaryIp); $('#callog').style.display=(s.log&&s.log.length)?'block':'none'; $('#callog').textContent=(s.log||[]).join('\n'); $('#callog').scrollTop=1e6;
-    $('#calstate').textContent=s.running?('running · '+Math.round((Date.now()/1000-s.started))+' s'):(s.finished?(s.ok?'last Soundcheck ok':'last Soundcheck failed'):'');
+    $('#calstate').textContent=s.running?('running'+(s.runs>1?' · pass '+s.run+' of '+s.runs:'')+' · '+Math.round((Date.now()/1000-s.started))+' s'):(s.finished?(s.ok?'last Soundcheck ok'+(s.combine?' · ×'+s.combine.runs+' residual '+s.combine.residual.toFixed(3):''):'last Soundcheck failed'):'');
     $('#calib').disabled=!!s.running;
     if(s.running) calTimer=setTimeout(pollCal,2000); else if(s.finished&&Date.now()/1000-s.finished<30){loadRoom();}
   }catch(e){}
 }
+setInterval(()=>{if(ROOM&&!dirty&&!inGesture&&!grab&&!ptrs.size&&document.visibilityState==='visible')loadRoom();},5000);   // pick up what other pages / Soundcheck / the agent changed
 async function loadRoom(){
   try{ROOM=await api('/api/room');}catch(e){ROOM=null;}
   const inRoom=ROOM&&ROOM.room_state&&ROOM.room_state.room_id;
@@ -299,7 +452,7 @@ async function loadRoom(){
   if(!inRoom)return;
   primaryIp=ROOM.primary_ip||ME.ip;
   $('#roomname').textContent=ROOM.room_state.room_name||'';
-  if(!dirty){fromRoom();renderTable(true);}
+  if(!dirty&&!inGesture&&!grab){fromRoom();renderTable(true);}
   sizeCanvas(); pollCal();
 }
 $('#cbtoggle').onclick=async()=>{const on=!ME.cloud_blocked; if(!confirm((on?'Block':'Unblock')+' the Syng cloud on this speaker?'+(on?'':' Syng\'s servers will then overwrite the local room document when the speaker reconnects.')))return;
@@ -307,7 +460,99 @@ $('#cbtoggle').onclick=async()=>{const on=!ME.cloud_blocked; if(!confirm((on?'Bl
 $('#showdoc').onclick=async()=>{const d=await api('/api/room/doc');const el=$('#doc');el.style.display=el.style.display==='none'?'block':'none';el.textContent=JSON.stringify(d,null,1);};
 $('#restore').onclick=async()=>{if(!confirm('Restore the state document saved before the agent first changed it on THIS speaker? (Only this speaker; others keep their documents.)'))return;
   try{const b=await api('/api/room/backup');await api('/api/room/restore',{state:b});toast('Restored');}catch(e){toast(e.message,true);} setTimeout(refreshAll,2000);};
-async function refreshAll(){await loadMe();loadWifi();loadRoom();loadDiscover();}
+const fmtB=b=>b>=1048576?(b/1048576).toFixed(0)+' MB':b>=1024?(b/1024).toFixed(0)+' KB':b+' B';
+async function loadRing(){try{const r=await api('/api/ring');$('#ringsteps').value=r.steps||100;$('#ringcw').checked=!!r.clockwise_up;$('#uisnd').value=r.ui_sound_pct==null?25:r.ui_sound_pct;}catch(e){}}
+$('#ringsave').onclick=async()=>{try{const r=await api('/api/ring',{steps:+$('#ringsteps').value,clockwise_up:$('#ringcw').checked,ui_sound_pct:+$('#uisnd').value});toast('Applied ('+(r.changed||[]).join(', ')+')');}catch(e){toast(e.message,true);}loadRing();};
+async function loadHK(){
+  try{const h=await api('/api/housekeeping');
+    $('#hk').innerHTML=`<div class=row><span>/data used</span><span>${fmtB(h.data.total-h.data.free)} of ${fmtB(h.data.total)}</span></div>
+      <div class=row><span>journal</span><span>${fmtB(h.journal_bytes)}</span></div>
+      <div class=row><span>core dumps</span><span>${h.coredumps.length} · ${fmtB(h.coredump_bytes)}${h.coredumps.length?' · newest '+new Date(Math.max(...h.coredumps.map(c=>c.mtime))*1000).toLocaleString():''}</span></div>
+      ${h.tmp.slice(0,4).map(t=>`<div class=row><span>${t.path}</span><span>${fmtB(t.bytes)}</span></div>`).join('')}
+      <div class=row><span>biggest processes</span><span>${h.top.slice(0,5).map(p=>p.name+' '+fmtB(p.rss_kb*1024)+' ('+p.elapsed+')').join(' · ')}</span></div>`;
+  }catch(e){$('#hk').textContent='n/a: '+e.message;}
+}
+$('#hkrefresh').onclick=loadHK;
+$('#hkvac').onclick=async()=>{await api('/api/housekeeping',{action:'vacuum_journal'});toast('Journal vacuumed');loadHK();};
+$('#hkcores').onclick=async()=>{if(!confirm('Delete all core dumps on this cell?'))return;const r=await api('/api/housekeeping',{action:'clear_coredumps'});toast('Removed '+r.removed+' file(s)');loadHK();};
+$('#hksvc').onchange=async()=>{const n=$('#hksvc').value;if(!n)return;if(!confirm('Restart '+n+' on this cell?')){$('#hksvc').value='';return;}const r=await api('/api/housekeeping',{action:'restart_service',name:n});toast(n+': '+(r.out||r.error));$('#hksvc').value='';setTimeout(loadHK,2000);};
+
+// ---------- network settings ----------
+async function loadNet(){
+  const box=$('#netsettings'); if(!box||box.closest('details').open===false&&box.dataset.loaded)return;
+  let n; try{n=await api('/api/net');}catch(e){box.textContent='unavailable: '+e.message;return;}
+  box.dataset.loaded='1';
+  const T=n.technologies||{}; const tech=(k,l)=>{const t=T[k]||{}; return `<div class=item><span class=grow><b>${l}</b> <span class=k>${t.powered?(t.connected?'on · connected':'on'):'off'}</span></span><button class="btn sm" data-tech="${k}" data-on="${t.powered?0:1}">${t.powered?'Turn off':'Turn on'}</button></div>`;};
+  const svc=(S)=>{const ip=S.ipv4||{}, cfg=S['ipv4.configuration']||{}, eth=S.ethernet||{}; const manual=(cfg.Method||ip.Method)==='manual'; const ns=(S.nameservers||[]).join(' ');
+    return `<div class=item style="flex-direction:column;align-items:stretch;gap:6px"><div><b>${S.name||S.id}</b> <span class=k>${S.type} · ${S.state||''} · ${eth.Interface||''} ${eth.Address||''}</span></div>
+      <div class=k>${ip.Address||'—'} / ${ip.Netmask||'—'} via ${ip.Gateway||'—'} · DNS ${ns||'—'} · ${manual?'static':'DHCP'}</div>
+      <form class=rowb data-svc="${S.id}" style="margin:0"><select name=method><option value=dhcp ${manual?'':'selected'}>DHCP</option><option value=manual ${manual?'selected':''}>Static</option></select>
+        <input type=text name=address placeholder="Address" value="${manual?(ip.Address||''):''}" style="width:130px"><input type=text name=netmask placeholder="Netmask" value="${ip.Netmask||'255.255.255.0'}" style="width:130px"><input type=text name=gateway placeholder="Gateway" value="${ip.Gateway||''}" style="width:130px"><input type=text name=dns placeholder="DNS (space-separated)" value="${(S['nameservers.configuration']||[]).join(' ')}" style="width:170px"><button class="btn sm pri">Apply</button></form></div>`;};
+  box.innerHTML=`<div class=list>${tech('wifi','Wi-Fi')}${tech('ethernet','Ethernet')}</div>
+    <div class=hint>Turning Wi-Fi off keeps this speaker out of any room: the firmware needs Wi-Fi for the room link (SyFi) and goes into "Wi-Fi repair" without it. Fine for a standalone wired speaker. The agent refuses to switch off the only link it is reached on.</div>
+    <div class=list style="margin-top:10px">${(n.services||[]).map(svc).join('')||'<div class=muted>no services</div>'}</div>
+    <div class=hint>Interfaces: ${(n.interfaces||[]).map(i=>`${i.ifname} ${i.ip}/${i.plen}${i.mac?' · '+i.mac:''}`).join(' · ')}. ${n.default_route?'Default route: '+n.default_route:''} A static address set here is kept by connman for that network; switching back to DHCP clears it.</div>`;
+  box.querySelectorAll('[data-tech]').forEach(b=>b.onclick=async()=>{const on=b.dataset.on==='1'; if(!on&&!confirm('Turn '+b.dataset.tech+' off on this speaker?'))return; try{const r=await api('/api/net/power',{tech:b.dataset.tech,on}); toast(r.out||'done');}catch(e){toast(e.message,true);} setTimeout(()=>{box.dataset.loaded='';loadNet();},2500);});
+  box.querySelectorAll('form[data-svc]').forEach(f=>f.onsubmit=async e=>{e.preventDefault(); const d=Object.fromEntries(new FormData(f).entries()); d.service=f.dataset.svc;
+    if(!confirm((d.method==='manual'?'Set '+d.address+' on ':'Use DHCP on ')+d.service+'? If this is the link you are using, the page may move to the new address.'))return;
+    try{const r=await api('/api/net/config',d); toast(r.ok?'Applied':'Failed: '+r.out,!r.ok);}catch(e){toast(e.message,true);} setTimeout(()=>{box.dataset.loaded='';loadNet();},3000);});
+}
+document.querySelector('#netsettings')&&document.querySelector('#netsettings').closest('details').addEventListener('toggle',e=>{if(e.target.open)loadNet();});
+
+// ---------- cell-to-cell link (SyFi / wired) ----------
+let linkTimer=null;
+const us=(ns)=>ns==null?'—':(Math.abs(ns)>=1e6?(ns/1e6).toFixed(1)+' ms':(ns/1e3).toFixed(0)+' µs');
+async function loadLink(){
+  const box=$('#linkbox'); if(!box) return;
+  let L; try{L=await api('/api/link');}catch(e){box.textContent='unavailable: '+e.message;return;}
+  const mode=L.mode||'syfi', busy=!!L.busy;
+  const mem=(L.members||[]).map(m=>`<div class=item><span class=grow><b>${m.name||('Cell '+short(m.serial))}</b> <span class=k>${m.role||''}${m.isMe?' · this speaker':''}</span>
+      <div class=k>${m.error?('unreachable: '+m.error):(`${m.wired_ip?('wired '+m.wired_if+' '+m.wired_ip):'<span style="color:var(--warn)">no wire</span>'} · main path → ${m.syfi_ip||'—'}`+
+      (m.ptp&&m.ptp.active?` · PTP ${m.ptp.state||'?'}${m.ptp.state==='SLAVE'?' offset '+us(m.ptp.offset_ns)+' · delay '+us(m.ptp.path_delay_ns):''}`:'')+` · sync ${m.time_sync_good?'good':'<span style="color:var(--warn)">not good</span>'}`)}</div></span></div>`).join('');
+  box.innerHTML=`<div class=srcs><button class="srcbtn ${mode==='syfi'?'on':''}" data-link=syfi ${busy?'disabled':''}>SyFi (stock)</button><button class="srcbtn ${mode==='wired'?'on':''}" data-link=wired ${busy?'disabled':''}>Wired</button>
+      ${busy?'<span class=k>switching to '+L.busy+'…</span>':''}</div>
+    <div class=hint><b>SyFi</b>: the primary runs a hidden Wi-Fi network, audio and a hardware clock from the Wi-Fi chip go over it. <b>Wired</b>: every speaker on Ethernet; audio goes over the wire and the clocks are kept together with PTP (the primary is the grandmaster), SyFi stays up idle. Needs a wired address on every member; switching restarts each speaker's audio for a few seconds. See docs/WIRED.md.</div>
+    ${L.members?`<div class=list style="margin-top:8px">${mem}</div>`:`<div class=k>${L.wired?('wired '+L.wired.ifname+' '+L.wired.ip):'no wire on this speaker'} · timesync ${L.timesync||'?'} on ${L.timesync_iface||'?'}${L.ptp&&L.ptp.active?' · PTP '+(L.ptp.state||'?')+' offset '+us(L.ptp.offset_ns):''}</div>`}
+    ${(L.log||[]).length?`<pre class=k style="white-space:pre-wrap;margin:8px 0 0">${L.log.join('\n')}</pre>`:''}`;
+  box.querySelectorAll('[data-link]').forEach(b=>b.onclick=async()=>{const m=b.dataset.link; if(m===mode)return;
+    if(!confirm((m==='wired'?'Switch the room to the wired link? Every speaker needs an Ethernet address; each one restarts its audio for a few seconds.':'Switch the room back to SyFi? Each speaker restarts its audio for a few seconds.')))return;
+    try{await api('/api/link',{mode:m}); toast('Switching…');}catch(e){toast(e.message,true);} setTimeout(loadLink,1500);});
+  clearTimeout(linkTimer); if(busy||$('#linkdet').open) linkTimer=setTimeout(loadLink,busy?2500:10000);
+}
+document.querySelector('#linkdet')&&document.querySelector('#linkdet').addEventListener('toggle',e=>{if(e.target.open)loadLink();else clearTimeout(linkTimer);});
+
+// ---------- firmware ----------
+let fwTimer=null;
+function fmtMB(b){return b==null?'—':(b/1e6).toFixed(0)+' MB';}
+async function loadFw(){
+  let f; try{f=await api('/api/firmware');}catch(e){$('#fwinfo').textContent='unavailable: '+e.message;return;}
+  const r=f.running||{}, o=f.other||{}, im=f.image, env=f.env||{};
+  const slot=p=>p===2?'A (p2)':p===3?'B (p3)':'?';
+  $('#fwinfo').innerHTML=`<div class=row><span>Running</span><span><b>${r.artifact||'?'}</b> · slot ${slot(r.part)} · agent ${r.agent||''}${env.upgrade_available==='1'?' · <span class=warn>not yet committed</span>':''}</span></div>
+    <div class=row><span>Other slot</span><span>${o.artifact||o.error||'empty'}${o.agent&&o.agent!=='none'?' · agent '+o.agent:''}</span></div>
+    <div class=row><span>Image on this speaker</span><span>${im?`<b>${im.name}</b> · ${fmtMB(im.size)} · ${im.artifact||''} · sha ${(im.sha256||'').slice(0,10)}…`:'none'}</span></div>
+    ${f.last?`<div class=row><span>Last install</span><span>${f.last.state||''} → ${f.last.to||''} (slot p${f.last.slot}) ${f.last.running?'· running '+f.last.running:''}</span></div>`:''}
+    ${f.room?`<div class=row><span>Room</span><span>${f.room.action} ${f.room.busy?'· running':''} — ${Object.entries(f.room.steps||{}).map(([k,v])=>k.slice(-5)+': '+v).join(' · ')||'…'}</span></div>`:''}`;
+  $('#fwbusy').textContent=f.busy?(f.busy+' '+Math.round((f.progress||0)*100)+'%'):(f.error?'error: '+f.error:'');
+  const lg=$('#fwlog'); if((f.log||[]).length){lg.style.display='block';lg.textContent=f.log.join('\n');lg.scrollTop=1e6;}
+  $('#fwinstall').disabled=!im||!!f.busy; $('#fwsend').disabled=!im||!!f.busy; $('#fwroom').disabled=!!f.busy;
+  clearTimeout(fwTimer); if(f.busy||(f.room&&f.room.busy)) fwTimer=setTimeout(loadFw,2000);
+}
+$('#fwrefresh').onclick=loadFw;
+$('#fwupload').onclick=()=>$('#fwfile').click();
+$('#fwfile').onchange=async()=>{const file=$('#fwfile').files[0]; if(!file)return; if(!/\.gz$/i.test(file.name)){toast('Expected troubadour-rootfs-<artifact>.img.gz',true);return;}
+  $('#fwbusy').textContent='uploading 0%'; const xhr=new XMLHttpRequest(); xhr.open('POST','/api/firmware/upload'); xhr.setRequestHeader('X-Filename',encodeURIComponent(file.name)); xhr.setRequestHeader('Content-Type','application/octet-stream');
+  xhr.upload.onprogress=e=>{if(e.lengthComputable)$('#fwbusy').textContent='uploading '+Math.round(e.loaded/e.total*100)+'%';};
+  xhr.onload=()=>{try{const j=JSON.parse(xhr.responseText); if(j.error)toast('Upload: '+j.error,true); else toast('Image stored: '+j.name);}catch(e){toast('Upload failed',true);} loadFw();};
+  xhr.onerror=()=>{toast('Upload failed',true);loadFw();}; xhr.send(file);};
+$('#fwinstall').onclick=async()=>{if(!confirm('Write the image to the idle slot, switch to it and reboot this speaker? Takes 3–5 minutes; the bootloader falls back by itself if the new slot does not come up.'))return;
+  try{await api('/api/firmware/install',{reboot:true});toast('Installing…');}catch(e){toast(e.message,true);} loadFw();};
+$('#fwsend').onclick=async()=>{try{const r=await api('/api/firmware/room',{action:'distribute'},primaryIp);toast('Sending to '+(r.members||[]).length+' speakers');}catch(e){toast(e.message,true);} loadFw();};
+$('#fwroom').onclick=async()=>{if(!confirm('Install on every speaker in the room: secondaries one by one (each reboots), this primary last. Music stops. Continue?'))return;
+  try{await api('/api/firmware/room',{action:'install'},primaryIp);toast('Room update started');}catch(e){toast(e.message,true);} loadFw();};
+$('#fwroll').onclick=async()=>{if(!confirm('Reboot into the other slot? (whatever is there now)'))return; try{await api('/api/firmware/rollback',{});toast('Rebooting into the other slot');}catch(e){toast(e.message,true);}};
+
+async function refreshAll(){await loadMe();loadWifi();loadRoom();loadDiscover();loadHK();loadRing();loadFw();}
 window.addEventListener('resize',sizeCanvas);
 refreshAll();
 </script></body></html>
