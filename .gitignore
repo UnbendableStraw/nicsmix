@@ -25,3 +25,11 @@ apps/android/.gradle/
 apps/android/build/
 apps/android/app/build/
 apps/ios/Troubadour.xcodeproj/
+# local working material (never published): the extracted Syng app and cell binaries,
+# SSH keys, per-build agent copies, firmware images, scratch notes
+_local/
+*.ipa
+*.sdcard*
+build-*/
+publish/
+LOCAL-NOTES.md
