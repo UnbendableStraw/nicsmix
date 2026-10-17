@@ -5,11 +5,32 @@ tab, the agent's own pages where they are already the right thing:
 
 | native | embedded (the agent's pages) |
 |---|---|
-| **Bonjour discovery** — `_syng._tcp` is what celldirector advertises; the first agent found enumerates the LAN (`/api/discover`). No IP typing; the USB setup link `10.86.0.1` is tried too | **Sound field** — the dashboard, scrolled to the field (WebGL, the app's own renderer) |
-| **Now Playing** — artwork, transport, sources, volume slider with haptics, mute, Sound mode, Scenes | **Setup** — rooms, Wi-Fi, room layout gestures, Soundcheck, firmware updates (the file picker opens Files, so a `.img.gz` can be installed from the phone) |
+| **Bonjour discovery** — `_syng._tcp` is what celldirector advertises; the first agent found enumerates the LAN (`/api/discover`). No IP typing; the USB setup link `10.86.0.1` is tried too | **Setup** — rooms, Wi-Fi, room layout gestures, Soundcheck, firmware updates (the file picker opens Files, so a `.img.gz` can be installed from the phone) |
+| **Sound field** — Metal, `Sources/Field/` (see below) | |
+| **Now Playing** — artwork, transport, sources, volume slider with haptics, mute, Sound mode, Scenes | |
 | **Speakers** — pucks, roles, Ping, long-press to name | |
 | **Shortcuts / Siri** — room volume, play a scene, play/pause | |
 | **Widgets** — sound field and LED controls on the home screen | |
+
+## The sound field
+
+`Sources/Field/` is the field, drawn by the GPU rather than embedded in a WebView — a port of the agent's
+`field/field.js`, which is itself a reproduction of the app's renderer (`docs/SOUND-FIELD.md`):
+
+- `FieldShaders.metal` — four passes: the **scene** (room disc, the capped-torus aura recoloured per source,
+  flurry blobs, the PulseField halo) at 0.62 resolution because it is all soft gradients; a **blit** up to full
+  size; the **particles** — a compute kernel for the simulation (the same ProtoTools physics: per-band puff
+  impulses, float time, spring-back, damping) plus additive points displaced by the pulse texture; and the
+  **overlay**, which refracts the scene through the app's own 64-entry lens table to draw the glass puck, notch,
+  handles and lift dot, then the speaker rings and the volume rim.
+- `FieldModel.swift` — state and the app's spring (stiffness 218.566, damping 29.568), the SSE audio feed
+  (`/api/viz/stream`), snap-to-speaker, and throttled `/api/soundfield` + `/api/volume` posts.
+- `FieldRenderer.swift` — the passes, with the simulation stepped at the app's fixed 30 Hz and frames
+  interpolating between steps, so motion is smooth at 120 Hz without changing the physics.
+- `FieldView.swift` — the Metal view plus touch handling (UIKit touches, not SwiftUI gestures, so a drag tracks
+  the finger with no recognizer delay): drag the puck, pull the dot above it out to go spatial, drag the notch to
+  aim, a dot to widen, **pinch** for width, **two-finger twist** to aim, **double-tap** to centre, and the rim at
+  the bottom for volume — with a haptic tick when the puck snaps onto a speaker and when spatial engages.
 
 ## Widgets
 
@@ -31,5 +52,5 @@ Local Network access on first launch — that is the Bonjour browse plus HTTP to
 the LAN. Requires iOS 16.
 
 No third-party dependencies. `Sources/Model/Agent.swift` is the whole API client (≈100 lines); the endpoints are
-documented in `docs/SETUP.md`. The pages the app embeds are served by the cells, so an agent update updates the
-app's field and setup screens without an app release.
+documented in `docs/SETUP.md`. The setup page is served by the cells, so an agent update updates that screen
+without an app release.

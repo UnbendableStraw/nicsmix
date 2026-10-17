@@ -3,15 +3,15 @@ import UIKit
 import WebKit
 import WidgetKit
 
-/// One room: a native now-playing card (haptic volume, sources, transport, sound mode, scenes) and the agent's own
-/// pages for the sound field and setup, embedded — they are already the app's look and the single source of truth.
+/// One room: native now playing (haptic volume, sources, transport, sound mode, scenes), the sound field drawn
+/// natively in Metal, native speakers, and the agent's own setup page embedded (the long tail of settings).
 struct RoomView: View {
     let room: Room
     @State private var tab = 0
     var body: some View {
         TabView(selection: $tab) {
             NowPlayingView(room: room).tabItem { Label("Now Playing", systemImage: "waveform") }.tag(0)
-            AgentPage(agent: room.agent, path: "/", anchor: "fieldwrap").tabItem { Label("Sound Field", systemImage: "circle.dotted") }.tag(1)
+            SoundFieldView(room: room).tabItem { Label("Sound Field", systemImage: "circle.dotted") }.tag(1)
             SpeakersView(room: room).tabItem { Label("Speakers", systemImage: "hifispeaker.2") }.tag(2)
             AgentPage(agent: room.agent, path: "/setup").tabItem { Label("Setup", systemImage: "slider.horizontal.3") }.tag(3)
         }

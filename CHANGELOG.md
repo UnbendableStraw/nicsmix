@@ -15,7 +15,23 @@ Agent builds are numbered bNN; the published `agent/syng-agent.py` is the latest
 - **celldirector restart guard**: restarted while Wi-Fi is already up, stock celldirector never gets a "connected" event and drops into *WiFi repair mode* 20 s later (phase persisted; roles keep working). The agent bounces the Wi-Fi service once when it sees that after a restart it performed. This is what the b39 fresh cell ran into.
 - `whoami` gains `wired_if`, `wired_ip`, `link_mode`, `ptp`; document entries carry `wired_ip`.
 
-## apps — 2026-10-17
+## apps — native sound field (iOS) — 2026-10-17
+- **The sound field is native on iOS** (`apps/ios/Troubadour/Sources/Field/`), no WebView: the web renderer ported
+  to Metal in four passes — scene (room disc, capped-torus aura per-source palette, flurry blobs, PulseField halo)
+  at 0.62 resolution, blit, particles, overlay. The **particle simulation moved into a compute kernel** (same
+  ProtoTools physics, same fixed 30 Hz step), and frames interpolate between steps, so it holds the display's rate
+  (120 Hz on ProMotion) where the WebView was spending its time in a CPU loop. The glass puck / notch / handles /
+  lift dot are drawn analytically, refracting the scene through the app's own 64-entry lens table; the puck wears
+  the source's glyph; speaker rings and the volume rim are in the same pass.
+- **Touch, not pointer events**: UIKit touches straight to the model (no recognizer delay) — drag the puck, pull
+  the dot above it out to go spatial, drag the notch to aim, a dot to widen, and the rim for volume; plus two
+  gestures the page could not do: **pinch** for width and **two-finger twist** to aim, with **double-tap** to
+  centre. Haptics when the puck snaps onto a speaker, when spatial engages or collapses, and every 5 % of volume.
+- The field now takes its audio from `/api/viz/stream` (SSE) directly instead of the page's polling, and posts
+  `/api/soundfield` at the same 110 ms throttle as the page. While nothing is being touched the agent stays the
+  source of truth (2 s poll).
+
+## apps — widgets and discovery — 2026-10-17
 - **Home-screen widgets** on both platforms: *Sound Field* (the room from above — reference circle, speakers, listener, the puck or the two spatial dots — with buttons to centre, switch classic/spatial, widen/narrow and nudge) and *LEDs* (current mode, a button per reactive mode and off, room-wide). They act on the room last opened in the app; iOS buttons need iOS 17 (WidgetKit interactive intents, App Group `group.space.troubadour`), Android uses Glance.
 - Discovery fixes after the first device test: Bonjour/NSD resolution pinned to IPv4 (iOS handed back the cells' IPv6 link-local and the app dropped it), a 2 s probe before the 25 s discovery call, a subnet sweep for :8080 as the fallback, Local Network denial surfaced in the message.
 - **iOS and Android companion apps** (`apps/`). Thin native shells around the agent: Bonjour / NSD discovery of `_syng._tcp` (celldirector advertises it on every cell) then `/api/discover` on the first agent found; a native Now Playing (artwork, transport, sources, volume slider with haptic ticks sent at ~12 Hz while dragging, mute, Sound mode, Scenes); speaker list with Ping and long-press naming; the cells' own sound-field and `/setup` pages embedded in a web view, with the file picker wired through so a firmware image can be installed from the phone. iOS adds Siri / Shortcuts intents (room volume, scene, play/pause); Android adds a Quick Settings play/pause tile and launcher shortcuts (pause, mute). No accounts, no cloud, no third-party dependencies beyond OkHttp/Coil on Android. Android build compiles (`assembleDebug`); the iOS project is an XcodeGen spec and has not been built here (no Xcode) — expect at most small fixes on first build.
