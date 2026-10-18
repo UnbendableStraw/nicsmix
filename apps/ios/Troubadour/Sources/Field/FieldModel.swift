@@ -35,6 +35,10 @@ final class FieldModel: ObservableObject {
         var followLed = true     // the field glows what the speakers' LEDs are glowing
     }
     var cfg = Cfg()
+    /// The kids' app: every gesture works and looks the same, but nothing is sent to the speakers, and the
+    /// agent's own field never overrides what is on screen. (Volume is not part of this; the kids' app sends
+    /// that through its own capped slider.)
+    var visualOnly = false
 
     // MARK: layout, in points; the view sets this on every layout pass
     var size = CGSize(width: 360, height: 338)
@@ -458,6 +462,7 @@ final class FieldModel: ObservableObject {
                 "spatial": spatial, "snap": snapped ?? ""]
     }
     private func send(_ final: Bool) {
+        if visualOnly { return }
         if final { FieldModel.widgetsChanged() }
         let b = body()
         if final || Date().timeIntervalSince(lastPost) > 0.11 {
@@ -643,6 +648,7 @@ final class FieldModel: ObservableObject {
         if let vol = (d["sources"] as? [String: [String: Any]])?.values.first(where: { ($0["active"] as? Bool) == true })?["volume"] as? Double {
             volTarget = vol; volume = vol
         }
+        if visualOnly { return }                       // the field on screen is the child's, not the room's
         let sp = (f["spatial"] as? Bool) ?? false
         if sp != spatial { spatial = sp }
         if let w = f["width"] as? Double {
@@ -752,9 +758,25 @@ struct FieldPalette {
             let c = hsv(h + dh, min(max(sat * sm, 0), 1), v)
             return rgb(c.0, c.1, c.2)
         }
-        return FieldPalette(deep: p(1.00, 0.54), cyan: p(0.83, 0.84), light: p(0.43, 0.95), white: p(0.10, 1.00),
-                            blue: p(0.88, 0.86, -0.045), teal: p(0.89, 0.70, 0.035),
-                            room: p(0.70, 0.33), roomEdge: p(0.70, 0.23))
+        let raw = FieldPalette(deep: p(1.00, 0.54), cyan: p(0.83, 0.84), light: p(0.43, 0.95), white: p(0.10, 1.00),
+                               blue: p(0.88, 0.86, -0.045), teal: p(0.89, 0.70, 0.035),
+                               room: p(0.70, 0.33), roomEdge: p(0.70, 0.23))
+        return raw.luminanceMatched(to: .airplay)
+    }
+    /// HSV "value" is not brightness: yellow or green at the value blue looks right at is two or three times as
+    /// bright, and washes the field out until the particles vanish. Each colour keeps its hue and saturation but
+    /// is held to the perceived brightness of the same role in the app's own (blue) palette.
+    func luminanceMatched(to ref: FieldPalette) -> FieldPalette {
+        func y(_ c: SIMD4<Float>) -> Float { 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z }
+        func fit(_ c: SIMD4<Float>, _ r: SIMD4<Float>) -> SIMD4<Float> {
+            let cap = y(r) * 1.15, have = y(c)
+            guard have > cap, have > 1e-4 else { return c }
+            let k = cap / have
+            return SIMD4<Float>(c.x * k, c.y * k, c.z * k, c.w)
+        }
+        return FieldPalette(deep: fit(deep, ref.deep), cyan: fit(cyan, ref.cyan), light: fit(light, ref.light),
+                            white: fit(white, ref.white), blue: fit(blue, ref.blue), teal: fit(teal, ref.teal),
+                            room: fit(room, ref.room), roomEdge: fit(roomEdge, ref.roomEdge))
     }
     private static func hsv(_ h0: Double, _ s: Double, _ v: Double) -> (Double, Double, Double) {
         let h = (h0.truncatingRemainder(dividingBy: 1) + 1).truncatingRemainder(dividingBy: 1)

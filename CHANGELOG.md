@@ -2,6 +2,31 @@
 
 Agent builds are numbered bNN; the published `agent/syng-agent.py` is the latest.
 
+## apps — Troubadour Kids (iOS / iPadOS) — 2026-10-18
+- **A kids' app**: room picker (scan only) and the sound field with a big volume slider, nothing else. The field is
+  visual-only (`FieldModel.visualOnly`): the puck, snapping and Spatial work and look the same but never touch the
+  speakers. Volume is real and capped at 25 % across the whole slider, under the main app's volume ceiling. Shares
+  the main app's field, discovery and theme; `RelativeSlider` moved to its own file (now sizeable).
+
+## b60 + LED daemon — two new LED modes — 2026-10-18
+- **Bloom** — brightness on the beat, colour from the treble. Each kick blooms the light and lets it fall away (timed
+  to the tempo once it locks, with a soft swell into the next predicted beat), over a resting level that follows the
+  passage; treble slides the colour from warm and deep to cooler and paler around the evolving base hue.
+- **Shimmer** — brightness from the treble, colour on the beat. Sparks on every hi-hat / cymbal hit over a glow from
+  the top end, a little bass body underneath; the colour holds and steps on each kick, further on an accent.
+- **A real onset detector** for both: the envelope flux the older modes use caught 37 of ~120 kicks a minute on a
+  test track; the new spectral detector (per-bin dB rise against an adaptive threshold, fired at the peak) finds
+  kicks and hi-hats separately, and treble gets its own level scale. Tuned against a captured minute of the live feed
+  run through the daemon's own code. Flow and groove are unchanged.
+
+## b59 + apps — the field stops washing out — 2026-10-18
+- **The particles stay visible in every LED colour.** The palette made from the speakers' LED colour kept the HSV
+  value that suits blue, and yellow / green / amber at that value are two to three times as bright — the disc
+  went to a flat glare and the particles disappeared into it. Every role now keeps the LED's hue and saturation but
+  is held to the perceived brightness of the same role in the blue palette (x1.15). And the classic (all-around)
+  disc has depth instead of a flat fill: bright at the puck, deeper toward the rim. Same change in the iOS Metal
+  shader, the Android GL shader, both widget renderers, both apps' palettes, and the web field (agent b59).
+
 ## apps — iPad (iOS) — 2026-10-18
 - **A real iPad app**, not the phone view on a big screen. Rooms in a sidebar; a room is one screen with the sound
   field as large as the display allows and the controls beside it (landscape) or under it in two columns

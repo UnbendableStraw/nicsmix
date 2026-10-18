@@ -147,7 +147,7 @@ class LedWidget : GlanceAppWidget() {
 }
 class LedWidgetReceiver : GlanceAppWidgetReceiver() { override val glanceAppWidget: GlanceAppWidget = LedWidget() }
 
-private val NAMES = mapOf("pulse" to "Pulse", "party" to "Party", "flow" to "Flow", "groove" to "Groove", "spectrum" to "Spectrum", "vu" to "VU", "beat" to "Beat")
+private val NAMES = mapOf("pulse" to "Pulse", "party" to "Party", "flow" to "Flow", "groove" to "Groove", "bloom" to "Bloom", "shimmer" to "Shimmer", "spectrum" to "Spectrum", "vu" to "VU", "beat" to "Beat")
 
 @Composable
 private fun LedContent(s: Snapshot) {

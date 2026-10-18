@@ -59,6 +59,17 @@ Pointer hover effects throughout; with a keyboard: Space play/pause, ⌘← / �
 and the app switches to the phone layout, which is what fits there. The visualizer widget adds the iPad-only extra
 large size.
 
+## Troubadour Kids
+
+A second app in the same project (target `TroubadourKids`, scheme *Troubadour Kids*, its own icon on the home
+screen): pick a room (found by scanning — no settings, no adding speakers), then the room's live, music-reactive
+sound field and a big volume slider. Moving the puck, snapping, Spatial (the ✨ button), pinch and twist all work and
+look as in the main app, but `FieldModel.visualOnly` keeps it on screen: nothing goes to the speakers, and the
+room's real sound field never overrides the child's. Volume is the one real control: the whole slider is 25 % of the
+speakers' volume (`KidsVolume.cap`), on top of the ceiling set in the main app (Setup → Sound & controls), which the
+speakers enforce whatever sends the volume. It remembers the last room; with one room it opens straight into it.
+For a child's iPad, Guided Access (Settings → Accessibility) keeps them in the app.
+
 ## Widgets
 
 Three home-screen widgets, acting on the room the app last opened: **Sound Field** (small, medium — the room from

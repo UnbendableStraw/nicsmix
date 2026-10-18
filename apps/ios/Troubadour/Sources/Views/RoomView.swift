@@ -189,55 +189,6 @@ struct RoomMainView: View {
     }
 }
 
-/// A volume bar you drag rather than tap: the value moves by how far the finger travels, never to where it
-/// touched, and a tap changes nothing — so it cannot suddenly jump the volume up. Haptic tick every 5 %.
-struct RelativeSlider: View {
-    let value: Double
-    let onChange: (Double, Bool) -> Void
-    @State private var base: Double?
-    @State private var shown: Double?
-    @State private var lastTick = -1
-
-    var body: some View {
-        GeometryReader { geo in
-            let w = max(geo.size.width, 1)
-            let v = shown ?? value
-            ZStack(alignment: .leading) {
-                Capsule().fill(Theme.surface2).frame(height: 8)
-                Capsule().fill(Color.white).frame(width: max(8, w * CGFloat(v)), height: 8)
-                Circle().fill(Color.white).frame(width: 26, height: 26)
-                    .shadow(color: .black.opacity(0.4), radius: 3, y: 1)
-                    .offset(x: (w - 26) * CGFloat(v))
-            }
-            .frame(height: 30)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 6)
-                    .onChanged { g in
-                        let start = base ?? value
-                        if base == nil { base = value }
-                        let nv = min(max(start + Double(g.translation.width / w), 0), 1)
-                        shown = nv
-                        let step = Int(nv * 20)
-                        if step != lastTick { lastTick = step; Haptics.tap(0.4) }
-                        onChange(nv, false)
-                    }
-                    .onEnded { _ in
-                        if let v = shown { onChange(v, true) }
-                        base = nil; shown = nil
-                    }
-            )
-        }
-        .frame(height: 30)
-        .overlay(alignment: .trailing) {
-            Text("\(Int(((shown ?? value) * 100).rounded()))")
-                .font(.caption.monospacedDigit()).foregroundStyle(Theme.muted)
-                .offset(y: 24)
-        }
-        .padding(.bottom, 14)
-    }
-}
-
 /// A capsule that hugs its label — the footer row scrolls, so these are not full width.
 struct Chip: ButtonStyle {
     var filled = false

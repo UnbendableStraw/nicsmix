@@ -113,6 +113,7 @@ void main() {
     gc *= 0.85 + 0.3 * uEnv.x;
     vec3 classic = mix(cBlue.rgb, mix(cCyan.rgb, cWhite.rgb, 0.35), clamp((gc - 0.55) * 2.2, 0.0, 1.0));
     classic = mix(classic, flc / max(fl, 0.001), clamp(fl * 0.35 * uGains.z, 0.0, 0.45));
+    classic *= 0.62 + 0.38 * exp(-fr * 2.6);        // depth: bright at the puck, deeper toward the rim, so the particles have something to show against
     classic += cWhite.rgb * core * 0.6 * (1.0 + 0.4 * uEnv.y);
 
     vec3 auraS = mix(col, aura, smoothstep(0.0, 0.55, g));

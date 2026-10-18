@@ -1089,7 +1089,7 @@ def stats():
 # ---------- LED (com.syng.Led D-Bus) + reactive service + vision files ----------
 LED_SVC = "com.syng.Led"; LED_OBJ = "/com/syng/ledmanager"; LED_IF = "com.syng.Led"
 VIS = "/usr/lib/syng/visions"
-REACTIVE_MODES = ["pulse", "party", "flow", "groove", "spectrum", "vu", "beat"]
+REACTIVE_MODES = ["pulse", "party", "flow", "groove", "bloom", "shimmer", "spectrum", "vu", "beat"]
 
 def bus_has(name):
     try:
@@ -1218,7 +1218,7 @@ def vision_write(name, content):
 # ====================================================================================
 import socket, struct, random, ipaddress, math, re, threading, subprocess, urllib.request
 
-AGENT_BUILD = "b58"
+AGENT_BUILD = "b61"
 SSH_PUB = "/data/home/root/.ssh/id_ed25519.pub"
 HOST_PUB = "/data/ssh/ssh_host_ed25519_key.pub"
 CLOUD_STATE_FILE = "/data/syng/cloud_state.json"
@@ -1418,12 +1418,34 @@ def mdns_syng(timeout=1.5):
         log("mdns error %s" % e)
     return found
 
+_DISC = {"t": 0.0, "full_t": 0.0, "result": None, "known": set(), "lock": threading.Lock()}
+
 def discover(timeout=1.2):
-    """Cells on the LAN: a parallel sweep of every local /24 for the agent port, plus mDNS for stock cells."""
+    """Cached front for _discover (b61): 30 s cache, a full /24 sweep at most every 10 min, known cells + mDNS between."""
+    with _DISC["lock"]:
+        now = time.time()
+        if _DISC["result"] is not None and now - _DISC["t"] < 30:
+            return _DISC["result"]
+        full = _DISC["result"] is None or now - _DISC["full_t"] > 600
+        r = _discover(timeout, None if full else sorted(_DISC["known"]))
+        _DISC["t"] = time.time()
+        if full: _DISC["full_t"] = _DISC["t"]
+        try:
+            _DISC["known"] |= {c.get("ip") for room in r.get("rooms", []) for c in room.get("cells", []) if c.get("ip")}
+        except Exception:
+            pass
+        _DISC["result"] = r
+        return r
+
+def _discover(timeout=1.2, only=None):
+    """Cells on the LAN: a parallel sweep of every local /24 for the agent port (or just `only`), plus mDNS."""
     me = whoami(); myip = me.get("ip")
     hosts = []
-    for n in lan_subnets():
-        hosts += [str(h) for h in n.hosts()]
+    if only is not None:
+        hosts = [ip for ip in only if ip]
+    else:
+        for n in lan_subnets():
+            hosts += [str(h) for h in n.hosts()]
     results = {}; lock = threading.Lock()
     def probe(ip):
         try:
@@ -3537,8 +3559,13 @@ function paletteFromColor(r,g,b,w){
   if(c[2] < 0.03 || s < 0.12) return null;     // LEDs off, or white light: keep the source's own colours
   s = clamp(s, 0.45, 1.0);
   const P=(sm,vv,dh)=>hsv2rgb(h+(dh||0), clamp(s*sm,0,1), vv);
-  return { cyanDeep:P(1.00,0.54), cyan:P(0.83,0.84), cyanLight:P(0.43,0.95), white:P(0.10,1.00),
+  const raw = { cyanDeep:P(1.00,0.54), cyan:P(0.83,0.84), cyanLight:P(0.43,0.95), white:P(0.10,1.00),
            blue:P(0.88,0.86,-0.045), teal:P(0.89,0.70,0.035), room:P(0.70,0.33), roomEdge:P(0.70,0.23) };
+  // HSV value is not brightness: yellow / green at blue's value wash the field out. Hold every role to the perceived
+  // brightness of the same role in the blue palette (x1.15), keeping hue and saturation.
+  const Y=c=>0.2126*c[0]+0.7152*c[1]+0.0722*c[2], ref=DEFAULTS.palettes.airplay, out={};
+  for(const k in raw){ const cap=Y(ref[k])*1.15, have=Y(raw[k]); out[k]=(have>cap&&have>1e-4)?raw[k].map(v=>v*cap/have):raw[k]; }
+  return out;
 }
 
 // ---------- the capped-torus SDF (exact port of ProtoTools cappedTorus/sampleNormalAndDistance) ----------
@@ -3639,6 +3666,7 @@ void main(){
   gc*=0.85+0.3*uE;
   vec3 classic=mix(cBlue,mix(cCyan,cWhite,0.35),clamp((gc-0.55)*2.2,0.0,1.0));
   classic=mix(classic,flc/max(fl,0.001),clamp(fl*0.35*uFlurry,0.0,0.45));
+  classic*=0.62+0.38*exp(-fr*2.6);   // depth: bright at the puck, deeper toward the rim, so the particles show
   classic+=cWhite*core*0.6*(1.0+0.4*uB);
   vec3 auraS=mix(col,aura,smoothstep(0.0,0.55,g));
   vec3 auraC=mix(col,classic,smoothstep(0.0,0.5,gc));
@@ -5193,7 +5221,7 @@ class H(BaseHTTPRequestHandler):
             except Exception: pass
 
 def main():
-    sys.stderr.write("syng-agent (b58) on http://0.0.0.0:%d\n" % PORT)
+    sys.stderr.write("syng-agent (b61) on http://0.0.0.0:%d\n" % PORT)
     threading.Thread(target=viz_fanout_loop, daemon=True).start()
     threading.Thread(target=viz_web_loop, daemon=True).start()
     lc_start()

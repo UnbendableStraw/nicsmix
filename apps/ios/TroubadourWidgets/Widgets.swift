@@ -431,7 +431,7 @@ struct LEDView: View {
     let snap: RoomSnapshot
     @Environment(\.widgetFamily) var family
     @Environment(\.widgetRenderingMode) var mode
-    static let names: [String: String] = ["pulse": "Pulse", "party": "Party", "flow": "Flow", "groove": "Groove", "spectrum": "Spectrum", "vu": "VU", "beat": "Beat"]
+    static let names: [String: String] = ["pulse": "Pulse", "party": "Party", "flow": "Flow", "groove": "Groove", "bloom": "Bloom", "shimmer": "Shimmer", "spectrum": "Spectrum", "vu": "VU", "beat": "Beat"]
     var body: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {

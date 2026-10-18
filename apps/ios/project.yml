@@ -44,6 +44,34 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: space.troubadour.ios
         DEVELOPMENT_TEAM: ""   # set yours, or pick the team in Xcode's Signing tab
         CODE_SIGN_STYLE: Automatic
+  TroubadourKids:                  # the kids' app: rooms + the visual-only sound field + a capped volume slider
+    type: application
+    platform: iOS
+    sources:
+      - TroubadourKids
+      - Troubadour/Sources/Model/Fleet.swift
+      - Troubadour/Sources/Model/Agent.swift
+      - Troubadour/Sources/Model/Theme.swift
+      - Troubadour/Sources/Field                 # FieldModel / FieldRenderer / FieldView / FieldShaders.metal
+      - Troubadour/Sources/Views/RelativeSlider.swift
+    info:
+      path: TroubadourKids/Info.plist
+      properties:
+        CFBundleDisplayName: Troubadour Kids
+        UIUserInterfaceStyle: Dark
+        NSLocalNetworkUsageDescription: Troubadour Kids finds the speakers on your home network to show their sound. Nothing leaves your network.
+        NSBonjourServices: [_syng._tcp, _http._tcp]
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoads: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: space.troubadour.kids
+        DEVELOPMENT_TEAM: ""
+        CODE_SIGN_STYLE: Automatic
   TroubadourWidgets:
     type: app-extension
     platform: iOS
@@ -76,6 +104,9 @@ targets:
 schemes:
   Troubadour:                      # the one to run; the widgets ship inside the app
     build: { targets: { Troubadour: all } }
+    run: { config: Debug }
+  Troubadour Kids:                 # the kids' app, its own install
+    build: { targets: { TroubadourKids: all } }
     run: { config: Debug }
   Widget - Sound Field:            # previews a single widget straight from Xcode
     build: { targets: { TroubadourWidgets: all, Troubadour: all } }

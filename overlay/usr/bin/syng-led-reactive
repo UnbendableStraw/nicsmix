@@ -12,7 +12,7 @@
 # ledmanager is stopped while this runs and restarted on exit.
 #
 # Usage:
-#   syng-led-reactive [--mode vu|spectrum|beat|rainbow|pulse|party|flow]
+#   syng-led-reactive [--mode vu|spectrum|beat|rainbow|pulse|party|flow|groove|bloom|shimmer]
 #                     [--source playback|mic|viz] [--ports "p1,p2"]
 #                     [--fps 60] [--gain 1.0] [--rate 48000] [--period 22767]
 #                     [--viz-port 7249] [--debug] [--no-manage]
@@ -214,6 +214,10 @@ def render(mode, env, flux, state, now, cfg):
         state["flash"] = state.get("flash", 0.0) * 0.82
         r, g, b = hsv_to_rgb(state.get("hue", 0.0), 1.0, state["flash"])
         return (r, g, b, 0)
+    if mode == "bloom":
+        return render_bloom(env, flux, state, now, cfg)
+    if mode == "shimmer":
+        return render_shimmer(env, flux, state, now, cfg)
     # --- evolving-color modes ---
     hue, flash = update_color(state, now, flux, cfg)
     if mode == "pulse":
@@ -276,6 +280,140 @@ def render_groove(env, flux, state, now, cfg, hue, flash):
     h = (hue + 0.06 * tre - 0.03 * bass) % 1.0
     r, g, b = hsv_to_rgb(h, sat, v)
     w = min(0.6, flash * 0.35 * (0.5 + tre))                      # white only on the hits
+    return (r, g, b, w)
+
+# ---------- bloom / shimmer: one feature drives the light, another drives the colour ----------
+#
+# Shared pieces. Treble gets its own level tracking: the band envelope shares one AGC across bass/mid/treble, so on
+# most music treble sits far below a kick and barely moves anything that uses it raw.
+
+def _dt(state, key, now):
+    dt = max(1e-3, min(0.1, now - state.get(key, now - 0.016))); state[key] = now
+    return dt
+
+def _ema(state, key, x, tau, dt):
+    a = 1.0 - math.exp(-dt / tau); v = state.get(key, x) + a * (x - state.get(key, x)); state[key] = v
+    return v
+
+def _env(state, key, x, attack, release, dt):
+    """Peak follower: fast up, slow down."""
+    cur = state.get(key, x)
+    tau = attack if x > cur else release
+    cur += (1.0 - math.exp(-dt / tau)) * (x - cur); state[key] = cur
+    return cur
+
+def _treble(state, tre, dt):
+    """Treble on its own scale: (fast 0..1, slow 0..1, transient 0..1)."""
+    pk = state["t_peak"] = max(state.get("t_peak", 0.0) * (1.0 - dt / 8.0), tre, 0.02)   # 8 s AGC
+    t = min(1.0, tre / pk)
+    fast = _env(state, "t_fast", t, 0.025, 0.12, dt)
+    slow = _ema(state, "t_slow", t, 1.2, dt)
+    trans = max(0.0, min(1.0, (fast - 0.55 * slow) / 0.45)) ** 1.4
+    return fast, slow, trans
+
+def _beats(state, flux, now, cfg, dt):
+    """Onsets from the bass flux, the tempo they imply, and whether this one is an accent.
+    Returns (hit, strength 0..1, accent, period or None, phase 0..1 or None)."""
+    ons = state.setdefault("k_ons", [])
+    if "_onset" in state:                                  # viz feed: the spectral onset detector (VizBands)
+        o = state["_onset"]
+        avg = _ema(state, "k_avg", o, 3.0, dt)
+        hit = o > 0.0 and (not ons or now - ons[-1] > 0.2)
+        strength = o
+        accent_now = o > 0.9
+    else:                                                  # the JACK path: the envelope's flux, as the other modes
+        avg = _ema(state, "k_avg", flux, 2.0, dt)
+        hit = flux > cfg["beat_sens"] and (not ons or now - ons[-1] > 0.22)
+        strength = max(0.0, min(1.0, flux / max(avg * 3.0, cfg["beat_sens"] * 1.5)))
+        accent_now = flux > max(avg * 4.0, cfg["beat_sens"] * 2.5)
+    accent = False
+    if hit:
+        ons.append(now); del ons[:-12]
+        n = state["k_n"] = state.get("k_n", 0) + 1
+        accent = accent_now or (state.get("k_period") is not None and n % 4 == 1)
+    else:
+        strength = 0.0
+    period = None
+    if len(ons) >= 5:
+        gaps = [b - a for a, b in zip(ons[-6:], ons[-5:]) if 0.28 <= b - a <= 1.25]
+        if len(gaps) >= 4:
+            gaps.sort(); med = gaps[len(gaps) // 2]
+            if all(abs(g - med) < 0.12 * med for g in gaps): period = med
+    if period is None and state.get("k_period") is not None:
+        state["k_n"] = 0                                   # tempo lost: count the bar again from the next lock
+    state["k_period"] = period
+    phase = (((now - ons[-1]) / period) % 1.0) if (period and ons and now - ons[-1] < 2.5 * period) else None
+    return hit, strength, accent, period, phase
+
+def _mood(state, overall, dt):
+    slow = _ema(state, "m_slow", overall, 1.5, dt)
+    peak = state["m_peak"] = max(state.get("m_peak", 0.0) * (1.0 - dt / 12.0), slow, 0.05)
+    return min(1.0, slow / peak)
+
+def render_bloom(env, flux, state, now, cfg):
+    """BLOOM — brightness on the beat, colour from the treble.
+    Each kick blooms the light and lets it fall away; with a tempo locked the fall-away is timed to it (a long breath
+    on slow songs, tight pulses on fast ones), and a soft swell rises into the next predicted beat so the gaps keep
+    moving. The resting level follows the passage (12 s AGC). The colour sits on a range around the slowly evolving
+    base hue: warm and deep when the top end is quiet, cooler and paler as hats and cymbals come in."""
+    bass, mid, tre, overall = [float(v) for v in env]
+    dt = _dt(state, "bl_t", now)
+    base_hue, _ = update_color(state, now, 0.0, cfg)          # the palette drifts; beats don't push the colour here
+    hit, strength, accent, period, phase = _beats(state, flux, now, cfg, dt)
+    mood = _mood(state, overall, dt)
+    tf, ts, tt = _treble(state, tre, dt)
+    lvl = state.get("bl_lvl", 0.0)
+    if hit:
+        lvl = max(lvl, 0.55 + 0.45 * strength + (0.1 if accent else 0.0))
+    tau = (0.42 * period) if period else 0.26
+    lvl *= math.exp(-dt / tau)
+    state["bl_lvl"] = lvl
+    swell = (0.5 - 0.5 * math.cos(2 * math.pi * phase)) ** 3 * 0.18 if phase is not None else 0.0   # rises into the beat
+    fl = cfg["floor"]
+    rest = fl + 0.20 * mood
+    v = max(fl, min(1.0, rest + (1.0 - rest) * min(1.0, lvl + swell * mood)))
+    tcol = _ema(state, "bl_tc", 0.65 * ts + 0.35 * tf, 0.18, dt)   # glide, don't flicker
+    h = (base_hue - 0.07 + 0.16 * tcol) % 1.0                     # warm end -> cool end of the base hue's range
+    sat = max(0.62, min(1.0, 1.0 - 0.28 * tcol))
+    r, g, b = hsv_to_rgb(h, sat, v)
+    w = min(0.45, 0.35 * tt * tt * lvl)                           # a white glint when a bright beat meets a hat
+    return (r, g, b, w)
+
+def render_shimmer(env, flux, state, now, cfg):
+    """SHIMMER — brightness from the treble, colour on the beat.
+    The light rides the treble on its own scale: it sparkles on hats, rides cymbal washes, and calms down when the
+    top end does. The colour holds, then steps on each beat with a crossfade timed to the tempo; an accent (the
+    bar's downbeat once the tempo is locked, or a much harder hit) takes a bigger step, so a bar reads small, small,
+    small, big. Bass adds a little body under the sparkle so quiet-top songs don't go dark."""
+    bass, mid, tre, overall = [float(v) for v in env]
+    dt = _dt(state, "sh_t", now)
+    hit, strength, accent, period, phase = _beats(state, flux, now, cfg, dt)
+    mood = _mood(state, overall, dt)
+    tf, ts, tt = _treble(state, tre, dt)
+    if "sh_hue" not in state:
+        state["sh_hue"] = random.random(); state["sh_tgt"] = state["sh_hue"]
+    tgt = (state["sh_tgt"] + cfg["drift"] * dt) % 1.0
+    if hit:
+        tgt = (tgt + (0.17 if accent else 0.035 + 0.025 * strength)) % 1.0   # small steps; an accent moves on
+        state["sh_fade"] = max(0.08, (0.35 * period) if period else 0.16)
+    if now >= state.get("sh_next", 0.0):                          # no beats for a while: the silent palette step
+        if state.get("sh_next", 0.0) > 0.0 and now - state.get("k_ons", [0.0])[-1:][0] > cfg["cycle"] * 0.5:
+            tgt = (tgt + 0.381966) % 1.0; state["sh_fade"] = max(0.05, cfg.get("silent_fade", 3.0))
+        state["sh_next"] = now + cfg["cycle"]
+    hue = _hue_lerp(state["sh_hue"], tgt, min(1.0, dt / state.get("sh_fade", 0.16)))
+    state["sh_hue"] = hue; state["sh_tgt"] = tgt
+    hat = state.get("_hat", 0.0)
+    spark = state.get("sh_spark", 0.0) * math.exp(-dt / 0.09)     # each hi-hat / cymbal hit: a spark, ~90 ms
+    if hat > 0.0: spark = max(spark, 0.45 + 0.55 * hat)
+    state["sh_spark"] = spark
+    if "_hat" not in state: spark = max(spark, tt)                # JACK path: no onsets, use the transient level
+    body = _env(state, "sh_body", bass, 0.05, 0.4, dt) * 0.14 * mood
+    fl = cfg["floor"]
+    lvl = 0.20 * ts * ts + 0.20 * tt + 0.55 * spark + body        # quiet glow from the top end, sparks on the hits
+    v = max(fl, min(1.0, fl + (1.0 - fl) * lvl))
+    sat = max(0.62, min(1.0, 1.0 - 0.32 * spark))
+    r, g, b = hsv_to_rgb(hue, sat, v)
+    w = min(0.45, 0.42 * spark ** 3)                              # only the hardest sparks go white
     return (r, g, b, w)
 
 def discover_ports(kind):
@@ -355,20 +493,63 @@ def _mp(b, i=0):
         return d, i
     return None, i
 
+class _Onset:
+    """Peak-picking onset detector on a flux signal (one value per feed packet, ~30/s): fires when the flux tops a
+    running mean + k running deviations (and 3 dB), only on the packet where it peaks, at most every 0.12 s.
+    Returns 0, or the onset's strength 0..1 (how far over the threshold it went)."""
+    def __init__(self):
+        self.mean = 0.0; self.dev = 1.0; self.prev = 0.0; self.pending = 0.0; self.quiet = 0
+    def feed(self, x, k):
+        thr = self.mean + k * self.dev + 3.0
+        out = 0.0
+        if self.pending > 0.0 and x < self.prev:          # the previous packet was the peak
+            out = self.pending; self.pending = 0.0; self.quiet = 3
+        elif x > thr and self.quiet <= 0:
+            self.pending = max(self.pending, min(1.0, 0.25 + (x - thr) / (2.0 * self.dev + 6.0)))
+        self.quiet -= 1
+        a = 0.06                                          # ~0.5 s memory at 30 packets/s
+        self.dev += a * (abs(x - self.mean) - self.dev)
+        self.mean += a * (x - self.mean)
+        self.prev = x
+        return out
+
 class VizBands:
     """Map the VisualizationDataBroadcast spectrum (88 bins, centi-dB) to the same
     (env[bass,mid,tre,overall], flux) that Bands produces, so render() is reused."""
     K = math.log(10.0) / 2000.0          # centi-dB -> linear amplitude: 10 ** (x / 100 / 20)
 
-    def __init__(self, gain):
+    def __init__(self, gain, beat_sens=0.08):
         self.gain = gain
         self.env = [0.0, 0.0, 0.0, 0.0]
         self.agc_band = 1e-3; self.agc_rms = 1e-3; self.prev_bass = 0.0
+        # onsets from the raw spectrum (bloom / shimmer): per-bin dB rise summed over a band, against an adaptive
+        # threshold. The smoothed envelope's own "flux" sees a kick as a small nudge and misses most of them.
+        self.prev_db = None
+        self.k = 1.0 + 12.0 * beat_sens          # threshold in deviations: beat_sens 0.05 -> 1.6, 0.08 -> 2.0
+        self.kick = _Onset(); self.hat = _Onset()
+        self.onset = 0.0; self.hat_onset = 0.0
 
     def feed(self, spec, rms):
         n = len(spec)
         if n < 6:
             return self.env, 0.0
+        db = [x * 0.01 for x in spec]
+        if self.prev_db is not None and len(self.prev_db) == n:
+            pv = self.prev_db
+            lo_b = max(2, int(n * 0.12)); hi_b = int(n * 0.55)
+            sb = 0.0
+            for i in range(1, lo_b):
+                d = db[i] - pv[i]
+                if d > 0: sb += d
+            st = 0.0
+            for i in range(hi_b, n):
+                d = db[i] - pv[i]
+                if d > 0: st += d
+            self.onset = self.kick.feed(sb, self.k)
+            self.hat_onset = self.hat.feed(st * (lo_b - 1) / max(1, n - hi_b), self.k)
+        else:
+            self.onset = self.hat_onset = 0.0
+        self.prev_db = db
         k = self.K; ex = math.exp
         m = [ex(x * k) for x in spec]
         lo = max(2, int(n * 0.12)); mi = int(n * 0.45)
@@ -407,8 +588,8 @@ def run_viz(args, cfg):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("0.0.0.0", args.viz_port))
     sock.setblocking(False)
-    bands = VizBands(args.gain)
-    state = {}; flux_acc = 0.0; last_pkt = 0.0; last_dbg = 0.0
+    bands = VizBands(args.gain, cfg.get("beat_sens", 0.08))
+    state = {}; flux_acc = 0.0; last_pkt = 0.0; last_dbg = 0.0; onset_acc = 0.0; hat_acc = 0.0
     sys.stderr.write("reactive(viz): mode=%s udp=%d — waiting for feed\n" % (args.mode, args.viz_port))
     tick = 1.0 / 60.0
     while True:
@@ -424,6 +605,7 @@ def run_viz(args, cfg):
                     spec = obj["stems"][0] if obj.get("stems") else []
                     _, f = bands.feed(spec, obj.get("stemsRms") or [])
                     flux_acc = max(flux_acc, f); got = True
+                    onset_acc = max(onset_acc, bands.onset); hat_acc = max(hat_acc, bands.hat_onset)
             except Exception:
                 pass
         now = time.time()
@@ -431,8 +613,9 @@ def run_viz(args, cfg):
             last_pkt = now
         elif now - last_pkt > 0.25:
             bands.env = [x * 0.90 for x in bands.env]   # feed stalled -> fade gently
+        state["_onset"] = onset_acc; state["_hat"] = hat_acc      # read by bloom / shimmer (viz feed only)
         pwm.set_rgbw(*render(args.mode, bands.env, flux_acc, state, now, cfg))
-        flux_acc *= 0.5
+        flux_acc *= 0.5; onset_acc = 0.0; hat_acc = 0.0
         if args.debug and now - last_dbg > 0.3:
             last_dbg = now
             sys.stderr.write("viz bass=%.2f mid=%.2f tre=%.2f ov=%.2f age=%.2fs\r"
@@ -443,7 +626,7 @@ def run_viz(args, cfg):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", default="pulse",
-                    choices=["vu", "spectrum", "beat", "rainbow", "pulse", "party", "flow", "groove"])
+                    choices=["vu", "spectrum", "beat", "rainbow", "pulse", "party", "flow", "groove", "bloom", "shimmer"])
     ap.add_argument("--source", default="playback", choices=["playback", "mic", "viz"])
     ap.add_argument("--viz-port", type=int, default=7249, help="UDP port for the viz feed (--source viz)")
     ap.add_argument("--ports", default="")

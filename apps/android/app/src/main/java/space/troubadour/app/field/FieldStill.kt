@@ -161,6 +161,8 @@ object FieldStill {
             var kb = mixf(cBlue[2], mixf(cCyan[2], cWhite[2], 0.35f), c1)
             val fd = max(fl, 0.001f); val ft = clamp(fl * 0.35f * flurry, 0f, 0.45f)
             kr = mixf(kr, lr / fd, ft); kg = mixf(kg, lg / fd, ft); kb = mixf(kb, lb / fd, ft)
+            val depth = 0.62f + 0.38f * exp(-fr * 2.6f)      // bright at the puck, deeper toward the rim
+            kr *= depth; kg *= depth; kb *= depth
             val cw = core * 0.6f * (1 + 0.4f * bass)
             kr += cWhite[0] * cw; kg += cWhite[1] * cw; kb += cWhite[2] * cw
 

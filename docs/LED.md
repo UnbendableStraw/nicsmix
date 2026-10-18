@@ -66,7 +66,20 @@ echo 22767 > /sys/class/pwm/pwmchip2/pwm0/duty_cycle   # full red (chip2 = Red)
 
 Modes: `vu`, `spectrum`, `beat`, `rainbow`, `pulse`, `party`, `flow` (evolving colour, brightness from bass, idle at `--floor`) and
 `groove` (flow's colour engine driven by three layers: a slow mood level with its own 12 s AGC, a contrast-expanded transient
-layer, and a tempo tracker that locks a phase-synced breath to the beat; treble cools the tint, white only on hits).
+layer, and a tempo tracker that locks a phase-synced breath to the beat; treble cools the tint, white only on hits),
+`bloom` (brightness on the beat, colour from the treble: each kick blooms and falls away — the fall timed to the
+tempo once it locks, a soft swell into the next predicted beat — over a resting level that follows the passage; the
+colour slides along a range around the slowly evolving base hue, warm when the top end is quiet, cooler and paler
+with hats and cymbals) and `shimmer` (brightness from the treble, colour on the beat: sparks on each hi-hat or
+cymbal hit over a glow from the top end's level, a little bass body underneath; the colour holds and steps a little
+on each kick, more on an accent — the downbeat once the tempo locks, or a much harder hit).
+
+**Onsets (bloom, shimmer).** The band envelope's own "flux" (the rise of the smoothed, AGC'd bass level) sees a
+kick as a small nudge and misses most of them — 37 a minute on a test track with ~120 kicks. `VizBands` also runs a
+spectral onset detector on the raw 88-bin spectrum: per-bin dB rise summed over the bass bins (kicks) and the top
+bins (hats), against a running mean + k running deviations (k = 1 + 12 x beat sensitivity, so the dashboard's
+slider still means "lower = touchier"), fired once at the peak, at most every 0.12 s. Treble is also tracked on its
+own scale (8 s AGC); the shared AGC leaves it far below the kick on most music.
 
 
 The dashboard's LED card (modes, group colour, beat sensitivity, floor, fades, vision editor) drives this

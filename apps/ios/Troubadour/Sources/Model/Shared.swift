@@ -42,7 +42,7 @@ struct RoomSnapshot {
     var listener: (x: Double, y: Double) = (0, 0)
     var circleRotation = 0.0
     var ledMode: String? = nil      // nil = manual / off
-    var ledModes: [String] = ["pulse", "party", "flow", "groove", "spectrum", "vu", "beat"]
+    var ledModes: [String] = ["pulse", "party", "flow", "groove", "bloom", "shimmer", "spectrum", "vu", "beat"]
     var playing: String? = nil
     var reachable = false
 

@@ -187,6 +187,7 @@ enum FieldStill {
             gc *= 0.85 + 0.3 * energy
             var classic = mix3(cBlue, mix3(cCyan, cWhite, 0.35), clampf((gc - 0.55) * 2.2, 0, 1))
             classic = mix3(classic, flc / max(fl, 0.001), clampf(fl * 0.35 * flurry, 0, 0.45))
+            classic *= 0.62 + 0.38 * exp(-fr * 2.6)      // depth: bright at the puck, deeper toward the rim
             classic += cWhite * core * 0.6 * (1 + 0.4 * bass)
 
             let auraS = mix3(col, aura, smooth(0, 0.55, g))

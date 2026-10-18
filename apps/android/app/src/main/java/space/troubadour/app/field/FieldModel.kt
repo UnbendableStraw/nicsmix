@@ -673,6 +673,20 @@ class FieldPalette(
     val deep: FloatArray, val cyan: FloatArray, val light: FloatArray, val white: FloatArray,
     val blue: FloatArray, val teal: FloatArray, val room: FloatArray, val roomEdge: FloatArray
 ) {
+    /** HSV "value" is not brightness: yellow or green at the value blue looks right at is two or three times as
+     *  bright and washes the field out until the particles vanish. Each colour keeps its hue and saturation but is
+     *  held to the perceived brightness of the same role in the app's own (blue) palette. */
+    fun luminanceMatched(ref: FieldPalette): FieldPalette {
+        fun y(c: FloatArray) = 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2]
+        fun fit(c: FloatArray, r: FloatArray): FloatArray {
+            val cap = y(r) * 1.15f; val have = y(c)
+            if (have <= cap || have < 1e-4f) return c
+            val k = cap / have
+            return floatArrayOf(c[0] * k, c[1] * k, c[2] * k, c[3])
+        }
+        return FieldPalette(fit(deep, ref.deep), fit(cyan, ref.cyan), fit(light, ref.light), fit(white, ref.white),
+                            fit(blue, ref.blue), fit(teal, ref.teal), fit(room, ref.room), fit(roomEdge, ref.roomEdge))
+    }
     fun blend(t: FieldPalette, k: Double) {
         val f = min(max(k, 0.0), 1.0).toFloat()
         for (p in arrayOf(deep to t.deep, cyan to t.cyan, light to t.light, white to t.white,
@@ -733,7 +747,7 @@ class FieldPalette(
                 }
             }
             return FieldPalette(p(1.00, 0.54), p(0.83, 0.84), p(0.43, 0.95), p(0.10, 1.00),
-                p(0.88, 0.86, -0.045), p(0.89, 0.70, 0.035), p(0.70, 0.33), p(0.70, 0.23))
+                p(0.88, 0.86, -0.045), p(0.89, 0.70, 0.035), p(0.70, 0.33), p(0.70, 0.23)).luminanceMatched(airplay())
         }
     }
 }
