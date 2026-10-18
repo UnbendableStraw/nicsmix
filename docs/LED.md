@@ -80,6 +80,12 @@ and the app's) ends up glowing the same colour as the speaker — see `paletteFr
 `field/field.js` and `FieldPalette.from()` in the iOS app. A manual colour set through
 `/api/led/color` publishes to the same file.
 
+**Cost.** With `--source viz` the loop runs at 60 fps on every cell, all day, so it is kept lean (measured on a Cell,
+2026-10-18): the msgpack decoder reads the feed's int16 arrays in one `struct` call, the 88-bin band analysis is plain
+`math` (numpy's per-call overhead on arrays that small cost more than the maths), and the four PWM `duty_cycle` files
+stay open and are written with `pwrite` at offset 0 instead of open/write/close per change. 2.55 ms -> 0.48 ms a
+frame: 15 % of a core -> 3 %, identical output. Profile it with the captured-packet harness in the changelog entry.
+
 Taps the JACK playback mix (what the speaker is playing), does a small numpy FFT,
 and drives the 4 PWM channels directly. `ledmanager` is stopped while it runs and
 restarted on exit (so `systemctl stop syng-led-reactive` restores normal behavior).

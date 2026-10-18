@@ -69,24 +69,75 @@ extension Dictionary where Key == String, Value == Any {
 
 // MARK: - the setup index
 
+/// The Setup sections, shared by the phone's index and the iPad's two-pane Setup.
+enum SetupSection: String, CaseIterable, Identifiable {
+    case room, layout, leds, sound, scenes, network, firmware, system, page
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .room: return "Room"
+        case .layout: return "Layout & Soundcheck"
+        case .leds: return "LEDs"
+        case .sound: return "Sound & controls"
+        case .scenes: return "Scenes"
+        case .network: return "Network"
+        case .firmware: return "Firmware"
+        case .system: return "System"
+        case .page: return "The speaker's own page"
+        }
+    }
+    var subtitle: String {
+        switch self {
+        case .room: return "Name, members, who is primary"
+        case .layout: return "Where the speakers are, and measuring it"
+        case .leds: return "Reactive modes, colour, the whole room or one speaker"
+        case .sound: return "Tone, the volume ceiling, the control ring"
+        case .scenes: return "Save the room, apply it, schedule it"
+        case .network: return "Wi-Fi, radios, cell-to-cell link"
+        case .firmware: return "What is flashed, install, roll back"
+        case .system: return "Live fleet, stats, sleep, housekeeping"
+        case .page: return "Everything, served by the cell"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .room: return "rectangle.3.group"
+        case .layout: return "circle.grid.cross"
+        case .leds: return "lightbulb"
+        case .sound: return "dial.medium"
+        case .scenes: return "theatermasks"
+        case .network: return "wifi"
+        case .firmware: return "arrow.down.circle"
+        case .system: return "gauge"
+        case .page: return "safari"
+        }
+    }
+    @ViewBuilder func page(_ room: Room) -> some View {
+        switch self {
+        case .room: RoomSetupView(room: room)
+        case .layout: LayoutView(room: room)
+        case .leds: LEDView(room: room)
+        case .sound: SoundSettingsView(room: room)
+        case .scenes: ScenesView(room: room)
+        case .network: NetworkView(room: room)
+        case .firmware: FirmwareView(room: room)
+        case .system: SystemView(room: room)
+        case .page:
+            AgentPage(agent: room.agent, path: "/setup")
+                .ignoresSafeArea(edges: .bottom)
+                .navigationTitle("Setup page")
+                .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
 struct SetupView: View {
     let room: Room
     var body: some View {
         ScrollView {
             VStack(spacing: 12) {
-                SetupLink("Room", "Name, members, who is primary", "rectangle.3.group") { RoomSetupView(room: room) }
-                SetupLink("Layout & Soundcheck", "Where the speakers are, and measuring it", "circle.grid.cross") { LayoutView(room: room) }
-                SetupLink("LEDs", "Reactive modes, colour, the whole room or one speaker", "lightbulb") { LEDView(room: room) }
-                SetupLink("Sound & controls", "Tone, the volume ceiling, the control ring", "dial.medium") { SoundSettingsView(room: room) }
-                SetupLink("Scenes", "Save the room, apply it, schedule it", "theatermasks") { ScenesView(room: room) }
-                SetupLink("Network", "Wi-Fi, radios, cell-to-cell link", "wifi") { NetworkView(room: room) }
-                SetupLink("Firmware", "What is flashed, install, roll back", "arrow.down.circle") { FirmwareView(room: room) }
-                SetupLink("System", "Live fleet, stats, sleep, housekeeping", "gauge") { SystemView(room: room) }
-                SetupLink("The speaker's own page", "Everything, served by the cell", "safari") {
-                    AgentPage(agent: room.agent, path: "/setup")
-                        .ignoresSafeArea(edges: .bottom)
-                        .navigationTitle("Setup page")
-                        .navigationBarTitleDisplayMode(.inline)
+                ForEach(SetupSection.allCases) { sec in
+                    SetupLink(sec.title, sec.subtitle, sec.icon) { sec.page(room) }
                 }
                 Text(room.agent.map { "Talking to \($0.ip) · port 8080" } ?? "No agent")
                     .font(.caption2).foregroundStyle(Theme.muted).padding(.top, 4)

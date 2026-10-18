@@ -34,8 +34,11 @@ Needs platform 34 and build-tools 34 (`sdkmanager "platforms;android-34" "build-
   (`GLSurfaceView` + touch straight to the model, pinch for width, two-finger twist to aim, double-tap to
   centre). A device without ES 3.1 compute falls back to the cell's WebGL field.
 - `PlayPauseTile.kt` — Quick Settings tile acting on the last room opened.
-- `widget/` — two Glance home-screen widgets (Sound Field: picture + centre / classic–spatial / width / nudge buttons; LEDs: mode
-  buttons + off), acting on the last room opened; `res/xml/widget_*.xml` are their provider specs.
+- `widget/` — three Glance home-screen widgets acting on the last room opened: Sound Field (the room plan + centre /
+  classic–spatial / width / nudge buttons), Sound Field Visualizer (`AuraWidget.kt`: the app's own field drawn once on
+  the CPU by `field/FieldStill.kt` — the GL shaders ported line for line — in the speakers' LED colour, with Centre,
+  Classic/Spatial and width buttons on wider sizes; the app redraws it 2 s after a field change) and LEDs (mode buttons
+  + off). `res/xml/widget_*.xml` are their provider specs.
 - `res/xml/shortcuts.xml` — launcher long-press shortcuts (pause, mute), handled in `MainActivity`.
 
 Cleartext HTTP to the LAN is allowed by `res/xml/network_security_config.xml`; the agent speaks plain HTTP on

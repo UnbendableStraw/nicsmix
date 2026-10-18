@@ -4,5 +4,6 @@
     <string name="sc_pause">Play / pause last room</string>
     <string name="sc_mute">Mute last room</string>
     <string name="widget_field_desc">Where the sound sits in the room you last opened: centre, classic / spatial, width, nudge.</string>
+    <string name="widget_aura_desc">The app\'s sound field (aura, particles, glass puck) in your speakers\' LED colour.</string>
     <string name="widget_led_desc">The light mode of the room you last opened; tap a mode to switch the whole room.</string>
 </resources>

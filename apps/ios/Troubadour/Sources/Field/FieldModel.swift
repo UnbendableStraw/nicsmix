@@ -1,6 +1,9 @@
 import Foundation
 import SwiftUI
 import simd
+#if canImport(WidgetKit)
+import WidgetKit
+#endif
 
 /// Everything the sound field knows, on the CPU: layout, the springs the app uses, the live audio
 /// feed, the flurry/pulse animation state, and the two endpoints it drives (/api/soundfield,
@@ -263,6 +266,19 @@ final class FieldModel: ObservableObject {
     }
     private var pulseAcc: Double = 0
 
+    /// Every spring straight to its target and the palette straight to its colour: a still (the widget)
+    /// has no frames to animate over.
+    func settle() {
+        puck = puckTarget; puckVel = .zero
+        puckScale = 1; puckScaleVel = 0
+        dir = dirTarget; dirVel = 0
+        half = halfTarget; halfVel = 0
+        weight = spatial ? cfg.weightSpatial : cfg.weightOmni; weightVel = 0
+        volume = volTarget
+        palette = paletteTarget
+        refreshRings()
+    }
+
     private func publishLabels() {
         let vp = Int((volume * 100).rounded())
         if vp != volPct { volPct = vp }
@@ -442,6 +458,7 @@ final class FieldModel: ObservableObject {
                 "spatial": spatial, "snap": snapped ?? ""]
     }
     private func send(_ final: Bool) {
+        if final { FieldModel.widgetsChanged() }
         let b = body()
         if final || Date().timeIntervalSince(lastPost) > 0.11 {
             lastPost = Date()
@@ -457,6 +474,17 @@ final class FieldModel: ObservableObject {
                 send(true)
             }
         }
+    }
+    private static var widgetReload: DispatchWorkItem?
+    /// The home-screen field widget draws the agent's state; nudge it after a change (reloads asked for
+    /// while the app is in front don't count against WidgetKit's budget).
+    static func widgetsChanged() {
+        #if canImport(WidgetKit)
+        widgetReload?.cancel()
+        let w = DispatchWorkItem { WidgetCenter.shared.reloadTimelines(ofKind: "space.troubadour.aura") }
+        widgetReload = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: w)
+        #endif
     }
     private func sendVolume(_ final: Bool) {
         guard final || Date().timeIntervalSince(lastPost) > 0.11 else { return }
@@ -507,7 +535,7 @@ final class FieldModel: ObservableObject {
         }
     }
 
-    private func ingest(_ v: [String: Any]) {
+    func ingest(_ v: [String: Any]) {
         let e = (v["energy"] as? Double) ?? 0
         let b = (v["bass"] as? Double) ?? 0
         energy += (e - energy) * 0.35
@@ -589,7 +617,7 @@ final class FieldModel: ObservableObject {
         }
     }
 
-    private func apply(_ d: [String: Any]) {
+    func apply(_ d: [String: Any]) {
         if error != nil { error = nil }
         let room = (d["room"] as? [String: Any]) ?? [:]
         if let ref = room["reference"] as? [String: Any], let r = ref["radius_m"] as? Double, r > 0.05 {

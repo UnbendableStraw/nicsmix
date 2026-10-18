@@ -25,7 +25,7 @@
 #   bass/mid/treble/overall envelope the JACK path produces, so every mode works.
 # Python 3.7 / numpy compatible.
 
-import argparse, os, select, signal, socket, struct, subprocess, sys, threading, time
+import argparse, math, os, random, select, signal, socket, struct, subprocess, sys, threading, time
 import numpy as np
 
 CHIP = {"W": 0, "G": 1, "R": 2, "B": 3}
@@ -45,6 +45,7 @@ class Pwm:
             except OSError as e:
                 sys.stderr.write("pwm chip%d init: %s\n" % (c, e))
         self._duty = {c: -1 for c in CHIP.values()}
+        self._fd = {}
         self._pub_t = 0.0
 
     def _w(self, path, val):
@@ -59,10 +60,24 @@ class Pwm:
             duty = int(self.period * v + 0.5)
             if duty != self._duty[c]:
                 try:
-                    self._w(PWMBASE.format(c) + "/pwm0/duty_cycle", str(duty))
+                    self._write_duty(c, duty)
                     self._duty[c] = duty
                 except OSError:
                     pass
+
+    def _write_duty(self, c, duty):
+        """sysfs takes a whole value per write at offset 0, so the file can stay open: at 60 fps the open/close
+        pair cost more than everything else this loop does (measured: 0.25 ms per change on the Cell)."""
+        fd = self._fd.get(c)
+        if fd is None:
+            fd = self._fd[c] = os.open(PWMBASE.format(c) + "/pwm0/duty_cycle", os.O_WRONLY)
+        try:
+            os.pwrite(fd, str(duty).encode(), 0)
+        except OSError:
+            try: os.close(fd)
+            except OSError: pass
+            self._fd.pop(c, None)
+            self._w(PWMBASE.format(c) + "/pwm0/duty_cycle", str(duty))
 
     def _publish(self, r, g, b, w):
         """Current colour -> /dev/shm, ~20 Hz. The agent puts it on the viz feed so the phone's and the
@@ -162,7 +177,6 @@ def update_color(state, now, flux, cfg):
             state["last_beat"] = now; flash = 1.0             # brightness pop only (keeps colors matched)
         state["flash"] = flash
         return bh, flash
-    import random
     dt = now - state.get("last_t", now)
     state["last_t"] = now
     cur = state.get("cur_hue")
@@ -231,7 +245,6 @@ def render_groove(env, flux, state, now, cfg, hue, flash):
          tempo — onsets (bass flux) are timed; when 4+ regular gaps agree (0.3–1.2 s) a phase-locked
                  breath rides the beat even between hits, and the hue kick waits for the downbeat.
        Treble pulls the tint toward a cooler, whiter hue; bass deepens saturation."""
-    import math
     bass, mid, tre, overall = [float(v) for v in env]
     dt = max(1e-3, min(0.1, now - state.get("g_t", now - 0.016))); state["g_t"] = now
     def ema(key, x, tau):
@@ -274,9 +287,27 @@ def discover_ports(kind):
     return [p for p in out.split() if key in p]
 
 # ---------- viz feed: VisualizationDataBroadcast (msgpack over UDP) ----------
+_INTS = {}
+def _ints16(b, i, n):
+    """n msgpack int16s (0xd1 hi lo each) from i in one struct call — the viz feed's arrays are all this
+    shape; anything else returns None and takes the general path."""
+    end = i + 3 * n
+    if n and b[i:end:3] == b"\xd1" * n:
+        f = _INTS.get(n)
+        if f is None: f = _INTS[n] = struct.Struct(">" + "xh" * n).unpack_from
+        return list(f(b, i)), end
+    return None, i
+
 def _mp(b, i=0):
     """Minimal MessagePack decoder for the subset the Syng viz feed uses."""
-    c = b[i]; i += 1
+    c = b[i]
+    if c == 0xdc:
+        v, j = _ints16(b, i + 3, (b[i + 1] << 8) | b[i + 2])
+        if v is not None: return v, j
+    elif 0x91 <= c <= 0x9f:
+        v, j = _ints16(b, i + 1, c & 0x0f)
+        if v is not None: return v, j
+    i += 1
     if c < 0x80: return c, i
     if c >= 0xe0: return c - 256, i
     if 0x80 <= c <= 0x8f:
@@ -327,33 +358,36 @@ def _mp(b, i=0):
 class VizBands:
     """Map the VisualizationDataBroadcast spectrum (88 bins, centi-dB) to the same
     (env[bass,mid,tre,overall], flux) that Bands produces, so render() is reused."""
+    K = math.log(10.0) / 2000.0          # centi-dB -> linear amplitude: 10 ** (x / 100 / 20)
+
     def __init__(self, gain):
         self.gain = gain
-        self.env = np.zeros(4, dtype=np.float32)
+        self.env = [0.0, 0.0, 0.0, 0.0]
         self.agc_band = 1e-3; self.agc_rms = 1e-3; self.prev_bass = 0.0
 
     def feed(self, spec, rms):
-        m = np.power(10.0, (np.array(spec, dtype=np.float32) / 100.0) / 20.0)  # centi-dB -> linear
-        n = len(m)
+        n = len(spec)
         if n < 6:
             return self.env, 0.0
+        k = self.K; ex = math.exp
+        m = [ex(x * k) for x in spec]
         lo = max(2, int(n * 0.12)); mi = int(n * 0.45)
-        bass = float(m[1:lo].mean()); mid = float(m[lo:mi].mean()); tre = float(m[mi:].mean())
-        overall = float(np.power(10.0, (max(rms) / 100.0) / 20.0)) if rms else float(m.mean())
-        raw = np.array([bass, mid, tre, overall], dtype=np.float32)
-        raw[:3] *= self.gain
-        self.agc_band = max(self.agc_band * 0.999, float(raw[:3].max()), 1e-3)
-        self.agc_rms = max(self.agc_rms * 0.999, float(raw[3]), 1e-3)
-        norm = np.empty(4, dtype=np.float32)
-        norm[:3] = np.clip(raw[:3] / self.agc_band, 0, 1)
-        norm[3] = min(1.0, raw[3] / self.agc_rms)
-        atk, dec = 0.6, 0.12
+        bass = sum(m[1:lo]) / (lo - 1); mid = sum(m[lo:mi]) / (mi - lo); tre = sum(m[mi:]) / (n - mi)
+        overall = ex(max(rms) * k) if rms else sum(m) / n
+        g = self.gain
+        raw = (bass * g, mid * g, tre * g, overall)
+        self.agc_band = max(self.agc_band * 0.999, raw[0], raw[1], raw[2], 1e-3)
+        self.agc_rms = max(self.agc_rms * 0.999, raw[3], 1e-3)
+        ab = self.agc_band
+        norm = (min(1.0, max(0.0, raw[0] / ab)), min(1.0, max(0.0, raw[1] / ab)),
+                min(1.0, max(0.0, raw[2] / ab)), min(1.0, raw[3] / self.agc_rms))
+        env = self.env
         for i in range(4):
-            a = atk if norm[i] > self.env[i] else dec
-            self.env[i] += a * (norm[i] - self.env[i])
-        flux = max(0.0, float(self.env[0]) - self.prev_bass)
-        self.prev_bass = float(self.env[0])
-        return self.env, flux
+            a = 0.6 if norm[i] > env[i] else 0.12
+            env[i] += a * (norm[i] - env[i])
+        flux = max(0.0, env[0] - self.prev_bass)
+        self.prev_bass = env[0]
+        return env, flux
 
 def run_viz(args, cfg):
     """LED from the Syng viz feed (UDP msgpack). The agent fans the feed to this
@@ -396,7 +430,7 @@ def run_viz(args, cfg):
         if got:
             last_pkt = now
         elif now - last_pkt > 0.25:
-            bands.env *= 0.90                      # feed stalled -> fade gently
+            bands.env = [x * 0.90 for x in bands.env]   # feed stalled -> fade gently
         pwm.set_rgbw(*render(args.mode, bands.env, flux_acc, state, now, cfg))
         flux_acc *= 0.5
         if args.debug and now - last_dbg > 0.3:

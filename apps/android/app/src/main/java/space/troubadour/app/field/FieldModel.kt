@@ -176,6 +176,8 @@ class FieldModel(val agent: Agent?) {
     val sourceTitle = MutableStateFlow("Sound field")
     val error = MutableStateFlow<String?>(null)
     var haptic: (() -> Unit)? = null
+    /** Called after a final field change reached the agent (the app redraws the home-screen widgets). */
+    var onSettled: (suspend () -> Unit)? = null
 
     private val job = SupervisorJob()
     private val scope = CoroutineScope(Dispatchers.IO + job)
@@ -282,6 +284,19 @@ class FieldModel(val agent: Agent?) {
         publishLabels()
     }
     private var pulseAcc = 0.0
+
+    /** Every spring straight to its target and the palette straight to its colour: a still (the widget) has no
+     *  frames to animate over. */
+    fun settle() {
+        puckX = puckTx; puckY = puckTy; puckVx = 0.0; puckVy = 0.0
+        puckScale = 1.0; puckScaleV = 0.0
+        dir = dirT; dirV = 0.0
+        half = halfT; halfV = 0.0
+        weight = if (spatial) weightSpatial else weightOmni; weightV = 0.0
+        volume = volT
+        palette.blend(ledPalette ?: sourcePalette, 1.0)
+        refreshRings()
+    }
 
     private fun publishLabels() {
         val vp = Math.round(volume * 100).toInt()
@@ -448,7 +463,10 @@ class FieldModel(val agent: Agent?) {
         if (!final && (now - lastPost) / 1e9 < 0.11) return
         lastPost = now
         val b = body()
-        scope.launch { try { agent?.post("/api/soundfield", b, 5) } catch (e: Exception) { error.value = e.message } }
+        scope.launch {
+            try { agent?.post("/api/soundfield", b, 5) } catch (e: Exception) { error.value = e.message }
+            if (final) onSettled?.invoke()
+        }
     }
     private fun sendVolume(final: Boolean) {
         val now = System.nanoTime()
@@ -495,7 +513,7 @@ class FieldModel(val agent: Agent?) {
     }
 
     @Synchronized
-    private fun ingest(v: JSONObject) {
+    fun ingest(v: JSONObject) {
         energy += (v.optDouble("energy", 0.0) - energy) * 0.35
         bass += (v.optDouble("bass", 0.0) - bass) * 0.4
         val sp = v.optJSONArray("spec")
@@ -552,7 +570,7 @@ class FieldModel(val agent: Agent?) {
         }
     }
 
-    private fun applyState(d: JSONObject) {
+    fun applyState(d: JSONObject) {
         error.value = null
         val room = d.optJSONObject("room")
         room?.optJSONObject("reference")?.let { ref ->

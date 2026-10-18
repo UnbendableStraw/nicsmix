@@ -53,6 +53,7 @@ targets:
       - Troubadour/Sources/Model/Agent.swift
       - Troubadour/Sources/Model/Shared.swift
       - Troubadour/Sources/Model/Theme.swift
+      - Troubadour/Sources/Field/FieldModel.swift    # the visualizer widget draws the app's own field model
     info:
       path: TroubadourWidgets/Info.plist
       properties:
@@ -83,6 +84,14 @@ schemes:
       environmentVariables:
         _XCWidgetKind: space.troubadour.field
         _XCWidgetFamily: medium
+        _XCWidgetDefaultView: timeline
+  Widget - Visualizer:
+    build: { targets: { TroubadourWidgets: all, Troubadour: all } }
+    run:
+      config: Debug
+      environmentVariables:
+        _XCWidgetKind: space.troubadour.aura
+        _XCWidgetFamily: large
         _XCWidgetDefaultView: timeline
   Widget - LEDs:
     build: { targets: { TroubadourWidgets: all, Troubadour: all } }

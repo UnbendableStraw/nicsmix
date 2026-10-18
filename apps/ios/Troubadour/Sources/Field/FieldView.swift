@@ -130,7 +130,20 @@ struct DisablesSwipeBack: UIViewControllerRepresentable {
             }
             return navigationController
         }
+        // iPad: the split view's own swipe (revealing the Rooms sidebar from the left edge) is a pan too
+        private var split: UISplitViewController? {
+            var p: UIViewController? = parent
+            while let c = p {
+                if let s = c as? UISplitViewController { return s }
+                p = c.parent
+            }
+            return splitViewController
+        }
+        private var splitGesture: Bool?
         private func block() {
+            if splitGesture == nil, let s = split, s.presentsWithGesture {
+                splitGesture = true; s.presentsWithGesture = false
+            }
             guard disabled.isEmpty, let n = nav else { return }
             var found: [UIGestureRecognizer] = []
             if let edge = n.interactivePopGestureRecognizer { found.append(edge) }
@@ -143,6 +156,8 @@ struct DisablesSwipeBack: UIViewControllerRepresentable {
             }
         }
         private func unblock() {
+            if splitGesture == true { split?.presentsWithGesture = true }
+            splitGesture = nil
             for g in disabled { g.isEnabled = true }
             disabled.removeAll()
         }

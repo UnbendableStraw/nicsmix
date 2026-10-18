@@ -330,7 +330,18 @@ class FieldRenderer(val model: FieldModel, private val density: Float) : GLSurfa
 
     /** The source's glyph on the puck, painted rather than shipped as an asset. */
     private fun makeGlyph(kind: String): Int {
-        val side = 192
+        val bmp = glyphBitmap(kind)
+        val t = IntArray(1); GLES20.glGenTextures(1, t, 0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, t[0])
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
+        texParams(GLES20.GL_CLAMP_TO_EDGE, GLES20.GL_CLAMP_TO_EDGE)
+        bmp.recycle()
+        return t[0]
+    }
+
+    companion object {
+    /** The glyph the puck wears, white on transparent (the widget's still renderer uses the same one). */
+    fun glyphBitmap(kind: String, side: Int = 192): Bitmap {
         val bmp = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
         val p = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -378,12 +389,8 @@ class FieldRenderer(val model: FieldModel, private val density: Float) : GLSurfa
                 c.drawPath(path, p)
             }
         }
-        val t = IntArray(1); GLES20.glGenTextures(1, t, 0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, t[0])
-        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
-        texParams(GLES20.GL_CLAMP_TO_EDGE, GLES20.GL_CLAMP_TO_EDGE)
-        bmp.recycle()
-        return t[0]
+        return bmp
+    }
     }
 
     // ---- shader plumbing ----

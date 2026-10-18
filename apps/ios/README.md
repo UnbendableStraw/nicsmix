@@ -10,7 +10,8 @@ tab, the agent's own pages where they are already the right thing:
 | **Setup** — Room (name, members, primary), Layout & Soundcheck, LEDs, Network (Wi-Fi, radios, the wired cell-to-cell link with live PTP), Firmware (install, roll back, upload a `.img.gz` from Files), System (live fleet, stats, sleep, housekeeping) | |
 | **Speakers** — pucks, roles, Ping, long-press to name | |
 | **Shortcuts / Siri** — room volume, play a scene, play/pause | |
-| **Widgets** — sound field and LED controls on the home screen | |
+| **Widgets** — sound field (room plan or the full visualizer) and LED controls on the home screen | |
+| **iPad** — its own layout: rooms sidebar, field + controls side by side, two-pane Setup, keyboard shortcuts | |
 
 ## The sound field
 
@@ -42,11 +43,36 @@ read straight out rather than modelled twice. `Sources/Views/LayoutView.swift` i
 drag a speaker to move it, tap it to turn it, fit a circle, hear it, then **Soundcheck ×3**, with the
 pass counter, the residual and the per-pair spread / reciprocity the b51 solver reports.
 
+## iPad
+
+Not the phone layout on a bigger screen (`Views/PadViews.swift`). Rooms are a sidebar (`NavigationSplitView`), and
+a room is one screen: in landscape the sound field fills the left of the display and a panel beside it carries
+everything else — now playing with large artwork and transport, the volume bar inline, Syng/Direct, Centre /
+Spatial / Mute, sources, scenes, and the speakers (Ping; touch-and-hold or right-click to rename). In portrait the
+field sits on top and the panels form two columns under it. **Setup** (the segmented control in the toolbar) is two
+panes: the sections on the left, the open page on the right. The field gets 40k particles (its area is four or five
+times the phone's), and the split view's own swipe is switched off while the field is on screen, so a drag near the
+left edge moves the puck instead of pulling out the sidebar.
+
+Pointer hover effects throughout; with a keyboard: Space play/pause, ⌘← / ⌘→ previous / next, ⌘0 centre the sound,
+⌘S spatial on/off, ⌘M mute. In Split View, Slide Over or a narrow Stage Manager window the size class goes compact
+and the app switches to the phone layout, which is what fits there. The visualizer widget adds the iPad-only extra
+large size.
+
 ## Widgets
 
-Two home-screen widgets (small and medium), acting on the room the app last opened: **Sound Field** (the room from
-above with the puck or the spatial dots; buttons for Centre, Classic/Spatial, width ±, nudge) and **LEDs** (current
-mode; a button per reactive mode and Off). Buttons need iOS 17; on iOS 16 the widgets are pictures that open the app.
+Three home-screen widgets, acting on the room the app last opened: **Sound Field** (small, medium — the room from
+above with the puck or the spatial dots; buttons for Centre, Classic/Spatial, width ±, nudge), **Sound Field
+Visualizer** (small, medium, large — the app's own field: aura, particles, glass puck and speaker rings, in the colour
+the speakers' LEDs are glowing; Centre, Classic/Spatial and width buttons on medium and large) and **LEDs** (small,
+medium — current mode; a button per reactive mode and Off).
+
+The visualizer can't run the Metal view: iOS draws a widget once, in the background, where GPU work isn't allowed.
+`TroubadourWidgets/FieldStill.swift` is the same renderer on the CPU — the scene shader line for line, the particle
+kernel stepped until the cloud settles into the field's shape, the glass orbs through the app's lens table — fed
+one `/api/state` and one `/api/viz/frame` through the app's `FieldModel`. It is a still (~0.25 s to draw a large
+widget); the app asks WidgetKit to redraw it two seconds after every field change, a widget button redraws it, and
+otherwise it refreshes every 15 minutes. Buttons need iOS 17; on iOS 16 the widgets are pictures that open the app.
 They live in the `TroubadourWidgets` extension and share the room through the App Group `group.space.troubadour`
 — Xcode registers it with your team on the first build (automatic signing; App Groups need a paid developer
 account). Tapping a widget opens that room (`troubadour://room`).

@@ -2,6 +2,41 @@
 
 Agent builds are numbered bNN; the published `agent/syng-agent.py` is the latest.
 
+## apps — iPad (iOS) — 2026-10-18
+- **A real iPad app**, not the phone view on a big screen. Rooms in a sidebar; a room is one screen with the sound
+  field as large as the display allows and the controls beside it (landscape) or under it in two columns
+  (portrait): now playing with big artwork, transport, the volume bar inline, Syng/Direct, Centre / Spatial / Mute,
+  sources, scenes and the speakers, no sheets. Setup is two panes. Hover effects, keyboard shortcuts (Space, ⌘← ⌘→,
+  ⌘0, ⌘S, ⌘M), 40k particles for the bigger field, the sidebar swipe disabled while the field is up, and the
+  visualizer widget in the iPad's extra-large size. Narrow multitasking windows get the phone layout.
+- The Setup sections are one list (`SetupSection`) shared by the phone index and the iPad panes.
+
+## b58 + LED daemon — 2026-10-18
+- **About a fifth of a CPU core back on every speaker.** Measured on idle cells: the agent sat at ~14 % and the LED
+  daemon at ~14 %, on the same four A53 cores jackd needs (an underrun storm is what "one speaker plays late" was).
+  - Agent: the viz receiver decoded every feed packet (~30/s, pure-Python msgpack plus a per-bin pass) on every
+    cell, though only the primary's copy is ever read, and only while an app or widget is looking. Now it relays the
+    raw packet to the LED daemon always, but decodes in full only while someone asked for viz in the last 5 s;
+    otherwise one packet in eight, with the trackers' rates scaled so a one-shot `/api/viz/frame` still has real
+    levels. The decoder reads the feed's int16 arrays in one `struct` call (5x faster). 14 % -> 3–4 %.
+  - `syng-led-reactive`: same decoder fast path, band analysis without numpy, PWM files kept open (`pwrite`).
+    15.3 % -> 2.9 % of a core in a profile on a Cell with captured packets; output identical to 2e-7.
+  - Client hang-ups (an app cancelling a poll, a widget timing out) no longer log three-part tracebacks.
+  - Not ours to fix: on the primary, Syng's `airplay2source` uses ~1 core while AirPlay plays (its `gcd-work`
+    pool ~68 %, its audio thread ~30 %).
+- **Android: Sound Field Visualizer widget**, the iOS one's twin — `FieldStill.kt` ports the CPU renderer; the glyph
+  comes from the GL renderer's own drawing (`FieldRenderer.glyphBitmap`). Widget buttons and the app redraw both field
+  widgets.
+
+## apps — visualizer widget (iOS) — 2026-10-18
+- **Sound Field Visualizer widget**, beside the room-plan one: the app's own field (aura, particles, glass puck,
+  speaker rings) in whatever colour the speakers' LEDs are glowing, small, medium or large; medium and large add
+  Centre, Classic/Spatial and width buttons. Widgets render once in the background, where iOS refuses GPU work,
+  so `FieldStill.swift` is the Metal renderer ported to the CPU (the scene shader line for line, the particle
+  kernel run until the cloud settles, the orbs through the same lens table), driven by the app's `FieldModel`
+  from one `/api/state` + `/api/viz/frame`. A large widget draws in about a quarter of a second. The app asks for
+  a redraw two seconds after any field change.
+
 ## b57 — 2026-10-18
 - **Moving the sound field is heard straight away.** cellbroker applies a new position in 30–60 ms, but each
   `POST /api/soundfield` took about a second in the agent and the agent served them one at a time, so a

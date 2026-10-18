@@ -94,7 +94,18 @@ class RoomModel(val agent: Agent?) {
 fun RoomMain(room: Room) {
     val ctx = LocalContext.current
     val m = remember(room.id) { RoomModel(room.agent) }
-    val field = remember(room.id) { FieldModel(room.agent) }
+    val field = remember(room.id) {
+        FieldModel(room.agent).also { f ->
+            // the widgets draw the agent's field: redraw them once a change has settled (debounced 2 s)
+            var pending: kotlinx.coroutines.Job? = null
+            f.onSettled = {
+                pending?.cancel()
+                pending = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch {
+                    delay(2000); space.troubadour.app.widget.AuraWidget.refresh(ctx.applicationContext)
+                }
+            }
+        }
+    }
     val scope = rememberCoroutineScope()
     var sheet by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(room.id) { while (true) { m.tick(); delay(2000) } }

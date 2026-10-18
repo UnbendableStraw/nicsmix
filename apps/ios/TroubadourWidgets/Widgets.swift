@@ -2,13 +2,15 @@ import WidgetKit
 import SwiftUI
 import AppIntents
 
-// Two home-screen widgets for the room the app last opened: the sound field (where the puck / the spatial dots
-// sit, with buttons to centre it, switch classic/spatial and widen or narrow it) and the LEDs (current mode,
-// buttons for each reactive mode and off). Small sizes are a picture that opens the app; medium adds the buttons.
+// Three home-screen widgets for the room the app last opened: the sound field as a room plan (where the puck /
+// the spatial dots sit, with buttons to centre it, switch classic/spatial and widen or narrow it), the sound
+// field visualizer (the app's own aura, particles and glass puck, in the speakers' LED colour) and the LEDs
+// (current mode, buttons for each reactive mode and off). Small sizes are a picture that opens the app;
+// medium and large add the buttons.
 
 @main
 struct TroubadourWidgets: WidgetBundle {
-    var body: some Widget { FieldWidget(); LEDWidget() }
+    var body: some Widget { FieldWidget(); AuraWidget(); LEDWidget() }
 }
 
 // MARK: - timeline (shared by both widgets)
@@ -226,6 +228,189 @@ struct FieldPainter {
             let a: Double = Double(i) * 2 * Double.pi / 3 - Double.pi / 2
             let d = CGPoint(x: p.x + CGFloat(cos(a)) * pr * 0.45, y: p.y + CGFloat(sin(a)) * pr * 0.45)
             ctx.fill(circle(d, pr * 0.11), with: .color(Theme.amber))
+        }
+    }
+}
+
+// MARK: - sound field visualizer (the app's renderer, drawn once on the CPU — see FieldStill.swift)
+
+struct AuraEntry: TimelineEntry { let date: Date; let snap: RoomSnapshot; let image: UIImage?; let spatial: Bool; let width: Int }
+
+struct AuraProvider: TimelineProvider {
+    func placeholder(in context: Context) -> AuraEntry {
+        AuraEntry(date: .now, snap: Provider.sample, image: nil, spatial: false, width: 95)
+    }
+    func getSnapshot(in context: Context, completion: @escaping (AuraEntry) -> Void) {
+        Task { completion(await Self.make(context, preview: context.isPreview)) }
+    }
+    func getTimeline(in context: Context, completion: @escaping (Timeline<AuraEntry>) -> Void) {
+        Task {
+            let e = await Self.make(context, preview: false)
+            // the app asks for a redraw whenever the field changes, and a button redraws it too; this is the
+            // fallback for changes made elsewhere (and the LED colour drifting with the music)
+            completion(Timeline(entries: [e], policy: .after(.now.addingTimeInterval(e.snap.reachable ? 15 * 60 : 5 * 60))))
+        }
+    }
+
+    static func make(_ context: Context, preview: Bool) async -> AuraEntry {
+        var snap = Provider.sample
+        var state: [String: Any]?
+        var frame: [String: Any]? = preview ? AuraArt.sampleFrame : nil
+        if !preview {
+            snap = await RoomSnapshot.fetch()
+            if let ip = Shared.agentIP {
+                let a = Agent(ip: ip)
+                async let st = try? a.get("/api/state", timeout: 4)
+                async let fr = try? a.get("/api/viz/frame", timeout: 4)
+                state = await st; frame = await fr
+            }
+        }
+        let side = AuraArt.fieldSide(context.family, context.displaySize)
+        let m = FieldStill.model(state: state, frame: frame, size: CGSize(width: side, height: side),
+                                 scale: side * 3 > 900 ? 2 : 3)
+        let img = AuraArt.image(m)
+        return AuraEntry(date: .now, snap: snap, image: img, spatial: m.spatial, width: Int((m.halfTarget * 180 / .pi).rounded()))
+    }
+}
+
+enum AuraArt {
+    /// The square the field gets: all of a small widget, the left square of a medium, the top of a large.
+    static func fieldSide(_ family: WidgetFamily, _ size: CGSize) -> CGFloat {
+        switch family {
+        case .systemMedium, .systemExtraLarge: return max(60, size.height)
+        case .systemLarge: return max(60, min(size.width, size.height - 70))
+        default: return max(60, min(size.width, size.height))
+        }
+    }
+    /// A quiet, mid-song frame for the widget gallery (no speaker to ask yet).
+    static let sampleFrame: [String: Any] = [
+        "energy": 0.55, "bass": 0.25, "beat": 0.0, "src": "airplay2", "seq": 1,
+        "spec": [0.2, 0.3, 0.45, 0.5, 0.6, 0.55, 0.45, 0.4, 0.35, 0.3, 0.25, 0.2, 0.15, 0.12, 0.1, 0.08, 0.06, 0.05, 0.04, 0.03, 0.02, 0.02, 0.01, 0.01],
+        "flux": [0.0, 0.1, 0.3, 0.2, 0.4, 0.5, 0.3, 0.2, 0.3, 0.2, 0.1, 0.1, 0.05, 0.05, 0.02, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]
+
+    static func image(_ m: FieldModel) -> UIImage? {
+        let still = FieldStill.render(m, glyph: glyph(FieldPalette.symbol(m.source)))
+        let data = Data(still.rgba) as CFData
+        guard let dp = CGDataProvider(data: data),
+              let cg = CGImage(width: still.width, height: still.height, bitsPerComponent: 8, bitsPerPixel: 32,
+                               bytesPerRow: still.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                               bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                               provider: dp, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+        else { return nil }
+        return UIImage(cgImage: cg, scale: m.contentsScale, orientation: .up)
+    }
+
+    /// The source's SF Symbol as an alpha mask, the way the renderer bakes it into a texture.
+    static func glyph(_ symbol: String) -> GlyphMask? {
+        let side = 96
+        let cfg = UIImage.SymbolConfiguration(pointSize: CGFloat(side) * 0.52, weight: .medium)
+        guard let img = UIImage(systemName: symbol, withConfiguration: cfg) ?? UIImage(systemName: "waveform") else { return nil }
+        var bytes = [UInt8](repeating: 0, count: side * side)
+        let ok: Bool = bytes.withUnsafeMutableBytes { raw in
+            guard let ctx = CGContext(data: raw.baseAddress, width: side, height: side, bitsPerComponent: 8,
+                                      bytesPerRow: side, space: CGColorSpaceCreateDeviceGray(),
+                                      bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue) else { return false }
+            UIGraphicsPushContext(ctx)
+            ctx.translateBy(x: 0, y: CGFloat(side)); ctx.scaleBy(x: 1, y: -1)
+            let w = img.size.width, h = img.size.height
+            img.withTintColor(.white, renderingMode: .alwaysOriginal)
+                .draw(in: CGRect(x: (CGFloat(side) - w) / 2, y: (CGFloat(side) - h) / 2, width: w, height: h))
+            UIGraphicsPopContext()
+            return true
+        }
+        guard ok else { return nil }
+        return GlyphMask(side: side, alpha: bytes.map { Float($0) / 255 })
+    }
+}
+
+struct AuraWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "space.troubadour.aura", provider: AuraProvider()) { e in AuraView(entry: e) }
+            .configurationDisplayName("Sound Field Visualizer")
+            .description("The app's sound field — aura, particles and glass puck — in your speakers' LED colour.")
+            .supportedFamilies([.systemSmall, .systemMedium, .systemLarge, .systemExtraLarge])   // extra large: iPad
+            .contentMarginsDisabled()
+    }
+}
+
+struct AuraView: View {
+    let entry: AuraEntry
+    @Environment(\.widgetFamily) var family
+    @Environment(\.widgetRenderingMode) var mode
+    var snap: RoomSnapshot { entry.snap }
+
+    var body: some View {
+        Group {
+            switch family {
+            case .systemMedium, .systemExtraLarge:
+                HStack(spacing: 0) {
+                    picture.aspectRatio(1, contentMode: .fit)
+                    info.padding(.vertical, family == .systemExtraLarge ? 22 : 12)
+                        .padding(.trailing, family == .systemExtraLarge ? 22 : 12)
+                        .padding(.leading, family == .systemExtraLarge ? 10 : 0)
+                }
+            case .systemLarge:
+                VStack(spacing: 0) {
+                    picture.aspectRatio(1, contentMode: .fit).frame(maxWidth: .infinity)
+                    footer.padding(.horizontal, 14).padding(.bottom, 12)
+                }
+            default:
+                picture
+            }
+        }
+        .containerBackground(Theme.bg, for: .widget)
+        .widgetURL(URL(string: "troubadour://room"))
+    }
+
+    @ViewBuilder private var picture: some View {
+        ZStack {
+            if mode == .accented || entry.image == nil {
+                FieldPicture(snap: snap, mono: mode == .accented).padding(10)
+            } else if let img = entry.image {
+                Image(uiImage: img).resizable().interpolation(.high)
+            }
+            if !snap.reachable && entry.image != nil && Shared.agentIP != nil {
+                Text("not reachable").font(.caption2).foregroundStyle(Theme.muted)
+                    .padding(.horizontal, 6).padding(.vertical, 3).background(.black.opacity(0.6), in: Capsule())
+            }
+        }
+    }
+    private var modeLine: String { entry.spatial ? "Spatial · \(entry.width)°" : "Classic" }
+
+    private var info: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(snap.room).font(.footnote.weight(.semibold)).lineLimit(1)
+            if let p = snap.playing { Text(p).font(.caption2).foregroundStyle(Theme.muted).lineLimit(1) }
+            Text(modeLine).font(.caption2).foregroundStyle(Theme.muted)
+            Spacer(minLength: 0)
+            HStack(spacing: 6) {
+                Pill("Centre", intent: FieldAction("center"))
+                Pill(entry.spatial ? "Classic" : "Spatial", intent: FieldAction(entry.spatial ? "classic" : "spatial"))
+            }
+            if entry.spatial {
+                HStack(spacing: 6) {
+                    Pill("Narrower", intent: FieldAction("narrower"), filled: false)
+                    Pill("Wider", intent: FieldAction("wider"), filled: false)
+                }
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(snap.room).font(.footnote.weight(.semibold)).lineLimit(1)
+                Text(snap.playing.map { "\($0) · \(modeLine)" } ?? modeLine).font(.caption2).foregroundStyle(Theme.muted).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            HStack(spacing: 6) {
+                if entry.spatial {
+                    Pill("−", intent: FieldAction("narrower"), filled: false).frame(width: 34)
+                    Pill("+", intent: FieldAction("wider"), filled: false).frame(width: 34)
+                }
+                Pill("Centre", intent: FieldAction("center")).frame(width: 64)
+                Pill(entry.spatial ? "Classic" : "Spatial", intent: FieldAction(entry.spatial ? "classic" : "spatial"), filled: false).frame(width: 64)
+            }
         }
     }
 }

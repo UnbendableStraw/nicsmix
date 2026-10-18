@@ -14,7 +14,7 @@ only ever talking to the speakers on the LAN, there is no account and nothing le
 | Speakers | pucks, roles, Ping, long-press to name a cell | |
 | Setup | **native on both**: Room (name, members, primary), Layout & Soundcheck (drag the speakers, measure ×3), LEDs, Sound & controls (tone, volume ceiling, control ring), Scenes (save, apply, schedule), Network (Wi-Fi, radios, wired link + PTP), Firmware (install, roll back, upload a `.img.gz` from the phone), System (live fleet, stats, sleep, cloud block, housekeeping) | anything not surfaced natively: `/setup` on the cell, one tap away |
 | Automation | iOS: Siri / Shortcuts (room volume, scene, play/pause). Android: Quick Settings play/pause tile, launcher shortcuts (pause, mute) | |
-| Home screen | **Widgets** on both: *Sound Field* (the room from above with the puck / spatial dots, buttons to centre, switch classic/spatial, widen or narrow, nudge) and *LEDs* (current mode, a button per reactive mode, off). They act on the room last opened in the app | |
+| Home screen | **Widgets** on both: *Sound Field* (the room from above with the puck / spatial dots, buttons to centre, switch classic/spatial, widen or narrow, nudge) *Sound Field Visualizer* (the app's full field — aura, particles, glass puck — in the speakers' LED colour, small to large) and *LEDs* (current mode, a button per reactive mode, off). They act on the room last opened in the app | |
 
 The split is deliberate. The setup page is a long tail of settings and one source of truth, so an agent update
 changes it in the apps without an app release. Everything a hand touches is native: discovery without IPs, a

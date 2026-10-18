@@ -45,7 +45,7 @@ import space.troubadour.app.net.Agent
 import kotlin.math.max
 import kotlin.math.min
 
-// Two home-screen widgets for the room the app last opened: the sound field (puck / spatial dots, with buttons to
+// Home-screen widgets for the room the app last opened (the visualizer is in AuraWidget.kt): the sound field (puck / spatial dots, with buttons to
 // centre, switch classic / spatial, widen or narrow, nudge) and the LEDs (current mode, a button per reactive mode
 // and off). Narrow sizes are the picture alone; tapping anything that isn't a button opens the app.
 
@@ -132,7 +132,7 @@ class FieldAction : ActionCallback {
             else -> return
         }
         runCatching { a.post("/api/soundfield", body, 6) }
-        FieldWidget().update(context, glanceId)
+        AuraWidget.refresh(context)              // both field widgets show the new field
     }
 }
 

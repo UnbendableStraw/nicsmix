@@ -88,7 +88,7 @@ fun RoomsScreen(onOpen: (Room) -> Unit) {
         LazyColumn(Modifier.padding(pad).fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             if (rooms.isEmpty()) item { Card { Text(if (scanning) "Looking for your Cells…" else (status ?: "No Cells found yet. Same Wi-Fi as the speakers? Or plug one in over USB-C and add 10.86.0.1."), color = Theme.muted, fontSize = 14.sp) } }
             items(rooms, key = { it.id }) { r ->
-                Box(Modifier.clickable { Fleet.lastRoomAgent = r.agent?.ip; scope.launch { FieldWidget().updateAll(ctx); LedWidget().updateAll(ctx) }; onOpen(r) }) {
+                Box(Modifier.clickable { Fleet.lastRoomAgent = r.agent?.ip; scope.launch { FieldWidget().updateAll(ctx); space.troubadour.app.widget.AuraWidget().updateAll(ctx); LedWidget().updateAll(ctx) }; onOpen(r) }) {
                     Card {
                         Row(verticalAlignment = Alignment.Bottom) {
                             Text(r.name, fontSize = 20.sp, fontWeight = FontWeight.Bold)
