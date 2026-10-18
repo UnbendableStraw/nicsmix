@@ -14,10 +14,11 @@ final class Endpoint: ObservableObject {
     let agent: Agent?
     private let path: String
     private let every: TimeInterval
+    private let timeout: TimeInterval
     private var timer: Timer?
 
-    init(_ agent: Agent?, _ path: String, every: TimeInterval = 6) {
-        self.agent = agent; self.path = path; self.every = every
+    init(_ agent: Agent?, _ path: String, every: TimeInterval = 6, timeout: TimeInterval = 8) {
+        self.agent = agent; self.path = path; self.every = every; self.timeout = timeout
     }
     func start() {
         reload()
@@ -32,7 +33,7 @@ final class Endpoint: ObservableObject {
     func load() async {
         guard let a = agent else { return }
         do {
-            data = try await a.get(path, timeout: 8)
+            data = try await a.get(path, timeout: timeout)
             if error != nil { error = nil }
         } catch {
             self.error = error.localizedDescription
@@ -71,7 +72,7 @@ extension Dictionary where Key == String, Value == Any {
 
 /// The Setup sections, shared by the phone's index and the iPad's two-pane Setup.
 enum SetupSection: String, CaseIterable, Identifiable {
-    case room, layout, leds, sound, scenes, network, firmware, system, page
+    case room, layout, leds, sound, stream, scenes, network, firmware, system, page
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -79,6 +80,7 @@ enum SetupSection: String, CaseIterable, Identifiable {
         case .layout: return "Layout & Soundcheck"
         case .leds: return "LEDs"
         case .sound: return "Sound & controls"
+        case .stream: return "Group stream"
         case .scenes: return "Scenes"
         case .network: return "Network"
         case .firmware: return "Firmware"
@@ -92,6 +94,7 @@ enum SetupSection: String, CaseIterable, Identifiable {
         case .layout: return "Where the speakers are, and measuring it"
         case .leds: return "Reactive modes, colour, the whole room or one speaker"
         case .sound: return "Tone, the volume ceiling, the control ring"
+        case .stream: return "The speakers' shared buffer, and when the stream drops out"
         case .scenes: return "Save the room, apply it, schedule it"
         case .network: return "Wi-Fi, radios, cell-to-cell link"
         case .firmware: return "What is flashed, install, roll back"
@@ -105,6 +108,7 @@ enum SetupSection: String, CaseIterable, Identifiable {
         case .layout: return "circle.grid.cross"
         case .leds: return "lightbulb"
         case .sound: return "dial.medium"
+        case .stream: return "waveform.path.ecg"
         case .scenes: return "theatermasks"
         case .network: return "wifi"
         case .firmware: return "arrow.down.circle"
@@ -118,6 +122,7 @@ enum SetupSection: String, CaseIterable, Identifiable {
         case .layout: LayoutView(room: room)
         case .leds: LEDView(room: room)
         case .sound: SoundSettingsView(room: room)
+        case .stream: StreamView(room: room)
         case .scenes: ScenesView(room: room)
         case .network: NetworkView(room: room)
         case .firmware: FirmwareView(room: room)

@@ -46,7 +46,7 @@ import kotlin.math.sin
 // ---------------------------------------------------------------- one endpoint, polled
 
 /** Loads one `GET /api/…`, refreshes it on a timer and posts back — the whole of each setup screen. */
-class Ep(val agent: Agent?, val path: String, val every: Long = 6000) {
+class Ep(val agent: Agent?, val path: String, val every: Long = 6000, val timeout: Long = 8) {
     var data by mutableStateOf(JSONObject())
     var error by mutableStateOf<String?>(null)
     var busy by mutableStateOf(false)
@@ -54,7 +54,7 @@ class Ep(val agent: Agent?, val path: String, val every: Long = 6000) {
 
     suspend fun load() {
         val a = agent ?: return
-        try { data = a.get(path, 8); error = null } catch (e: Exception) { error = e.message }
+        try { data = a.get(path, timeout); error = null } catch (e: Exception) { error = e.message }
     }
     fun fire(scope: CoroutineScope, p: String, body: Map<String, Any?> = emptyMap(), say: String? = null) {
         scope.launch {
@@ -69,8 +69,8 @@ class Ep(val agent: Agent?, val path: String, val every: Long = 6000) {
 }
 
 @Composable
-fun rememberEp(agent: Agent?, path: String, every: Long = 6000): Ep {
-    val ep = remember(path) { Ep(agent, path, every) }
+fun rememberEp(agent: Agent?, path: String, every: Long = 6000, timeout: Long = 8): Ep {
+    val ep = remember(path) { Ep(agent, path, every, timeout) }
     LaunchedEffect(path) {
         while (true) { ep.load(); if (every <= 0) break; delay(every) }
     }
@@ -115,6 +115,7 @@ fun SetupScreen(room: Room) {
             SetupRow("Layout & Soundcheck", "Where the speakers are, and measuring it", Icons.Default.GridGoldenratio) { screen = "layout" }
             SetupRow("LEDs", "Reactive modes, colour, the whole room or one speaker", Icons.Default.Lightbulb) { screen = "led" }
             SetupRow("Sound & controls", "Tone, the volume ceiling, the control ring", Icons.Default.Tune) { screen = "sound" }
+            SetupRow("Group stream", "The speakers' shared buffer, and when the stream drops out", Icons.Default.GraphicEq) { screen = "stream" }
             SetupRow("Scenes", "Save the room, apply it, schedule it", Icons.Default.Theaters) { screen = "scenes" }
             SetupRow("Network", "Wi-Fi, radios, cell-to-cell link", Icons.Default.Wifi) { screen = "net" }
             SetupRow("Firmware", "What is flashed, install, roll back", Icons.Default.SystemUpdate) { screen = "fw" }
@@ -127,6 +128,7 @@ fun SetupScreen(room: Room) {
         "led" -> LedSetup(room) { screen = null }
         "sound" -> SoundSetup(room) { screen = null }
         "scenes" -> ScenesSetup(room) { screen = null }
+        "stream" -> StreamSetup(room) { screen = null }
         "net" -> NetworkSetup(room) { screen = null }
         "fw" -> FirmwareSetup(room) { screen = null }
         "sys" -> SystemSetup(room) { screen = null }
@@ -814,6 +816,109 @@ fun SystemSetup(room: Room, onBack: () -> Unit) {
                         Text(o.opt(kk)?.toString()?.take(24) ?: "—", fontSize = 11.sp, maxLines = 1)
                     }
                 }
+            }
+        }
+    }
+}
+
+
+// ---------------------------------------------------------------- group stream: buffer + dropout history
+
+private val UCOL = listOf(0xFF5AB0FF, 0xFF79DE96, 0xFFE0B35A, 0xFFD98CF2, 0xFFFF7A6B, 0xFF6FE0D6, 0xFFC9C9C9, 0xFFF2D16B).map { Color(it) }
+
+@Composable
+fun StreamSetup(room: Room, onBack: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val nb = rememberEp(room.agent, "/api/netbuffer", 0)
+    var hours by remember { mutableStateOf(24) }
+    val und = rememberEp(room.agent, "/api/underruns?hours=$hours", if (hours == 24) 60000L else 0L, if (hours == 24) 60L else 90L)
+    var ms by remember { mutableStateOf(50f) }
+    var touched by remember { mutableStateOf(false) }
+    var confirm by remember { mutableStateOf(false) }
+    val current = if (nb.data.has("ms") && !nb.data.isNull("ms")) nb.data.optInt("ms") else null
+    val mixed = nb.data.optBoolean("mixed", false)
+    LaunchedEffect(current) { if (!touched && current != null) ms = current.toFloat() }
+    val nbCells = nb.data.optJSONArray("cells")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } } ?: emptyList()
+    fun name(c: org.json.JSONObject) = c.optString("name").ifEmpty { "Cell " + c.optString("serial").takeLast(5) }
+
+    Page("Group stream", nb, onBack) {
+        Card("Network buffer") {
+            Text(when {
+                mixed -> "Not the same everywhere: " + nbCells.joinToString(" · ") { "${name(it)} ${it.optInt("ms")} ms" }
+                current == null -> if (nbCells.isEmpty()) "Reading…" else "Unknown"
+                else -> "$current ms on ${nbCells.size} speaker${if (nbCells.size == 1) "" else "s"}" + if (nbCells.firstOrNull()?.optBoolean("dualPath") == true) " · two paths (Wi-Fi + SyFi)" else ""
+            }, fontSize = 14.sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Slider(value = ms, onValueChange = { ms = (it / 10f).roundToInt() * 10f; touched = true }, valueRange = 20f..500f, modifier = Modifier.weight(1f),
+                    colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Theme.surface2))
+                Text("${ms.toInt()} ms", fontSize = 13.sp, modifier = Modifier.width(60.dp))
+            }
+            Pill("Apply to the room", filled = true, enabled = !nb.busy && (mixed || current == null || ms.toInt() != current)) { confirm = true }
+            Text("How far ahead the primary streams to the other speakers (stock 50 ms). A Wi-Fi gap shorter than this is inaudible; a longer one is a dropout. More buffer means more delay before sound starts, which music doesn't mind. Applying restarts the audio engine on every speaker in the room — a few seconds of silence.",
+                color = Theme.muted, fontSize = 12.sp)
+        }
+        Card("Stream dropouts") {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill("24 hours", filled = hours == 24) { hours = 24 }
+                Pill("7 days", filled = hours != 24) { hours = 168 }
+            }
+            val cells = und.data.optJSONArray("cells")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) }.filter { it.has("events") } } ?: emptyList()
+            if (cells.isEmpty()) {
+                Text(if (und.error != null) "n/a: ${und.error}" else "Reading every speaker's log…", color = Theme.muted, fontSize = 12.sp)
+            } else {
+                val now = System.currentTimeMillis() / 1000.0; val t0 = now - hours * 3600.0; val nb2 = hours
+                val bins = Array(nb2) { FloatArray(cells.size) }
+                val mins = Array(60) { FloatArray(cells.size) }
+                val cal = java.util.Calendar.getInstance()
+                cells.forEachIndexed { ci, c ->
+                    val ev = c.optJSONArray("events") ?: return@forEachIndexed
+                    for (i in 0 until ev.length()) {
+                        val e = ev.optJSONObject(i) ?: continue
+                        val t = e.optDouble("t", 0.0); if (t < t0) continue
+                        val b = ((t - t0) / 3600.0).toInt().coerceIn(0, nb2 - 1)
+                        bins[b][ci] += 1f + (kotlin.math.ln(max(1, e.optInt("burst", 1)).toDouble()) / kotlin.math.ln(2.0)).toFloat()
+                        cal.timeInMillis = (t * 1000).toLong(); mins[cal.get(java.util.Calendar.MINUTE)][ci] += 1f
+                    }
+                }
+                StackedBars(bins, Modifier.fillMaxWidth().height(150.dp))
+                Text("By minute past the hour — an hourly culprit is one tall bar", color = Theme.muted, fontSize = 12.sp)
+                StackedBars(mins, Modifier.fillMaxWidth().height(90.dp))
+                val per = mins.map { it.sum() }; val top = per.indices.maxByOrNull { per[it] } ?: 0; val total = per.sum().toInt()
+                Text(cells.mapIndexed { ci, c -> "${name(c)} ${mins.sumOf { it[ci].toDouble() }.toInt()}" + if (c.optString("role") == "primary") " (sender)" else "" }.joinToString(" · ")
+                    + if (per[top] >= 3) "\nMost at :${"%02d".format(top)} past the hour (${per[top].toInt()} of $total)" else "", color = Theme.muted, fontSize = 12.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    cells.forEachIndexed { ci, c -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(9.dp).background(UCOL[ci % UCOL.size], RoundedCornerShape(2.dp))); Spacer(Modifier.width(4.dp))
+                        Text(name(c), fontSize = 11.sp, color = Theme.muted) } }
+                }
+            }
+            Text("Each mark is a moment the stream from the primary ran dry on that speaker; taller is longer. The primary is the sender and never logs these; a speaker alone in its room has no stream.",
+                color = Theme.muted, fontSize = 12.sp)
+        }
+    }
+    if (confirm) {
+        AlertDialog(onDismissRequest = { confirm = false },
+            title = { Text("Set the buffer to ${ms.toInt()} ms?") },
+            text = { Text("On every speaker in this room. Each one restarts its audio engine: a few seconds of silence.") },
+            confirmButton = { TextButton(onClick = { confirm = false; touched = false; nb.fire(scope, "/api/netbuffer", mapOf("ms" to ms.toInt()), "Buffer set to ${ms.toInt()} ms — audio restarting") }) { Text("Apply") } },
+            dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } })
+    }
+}
+
+@Composable
+private fun StackedBars(data: Array<FloatArray>, modifier: Modifier) {
+    val line = Theme.surface2
+    Canvas(modifier) {
+        val n = data.size; if (n == 0) return@Canvas
+        val mx = max(1f, data.maxOf { it.sum() }); val bw = size.width / n; val h = size.height - 2f
+        drawLine(line, androidx.compose.ui.geometry.Offset(0f, h + 1f), androidx.compose.ui.geometry.Offset(size.width, h + 1f))
+        data.forEachIndexed { i, s ->
+            var y = h
+            s.forEachIndexed { ci, v ->
+                if (v <= 0f) return@forEachIndexed
+                val hh = v / mx * (h - 4f)
+                drawRect(UCOL[ci % UCOL.size], androidx.compose.ui.geometry.Offset(i * bw + 0.5f, y - hh), androidx.compose.ui.geometry.Size(max(1f, bw - 1f), hh))
+                y -= hh
             }
         }
     }

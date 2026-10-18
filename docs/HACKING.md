@@ -79,3 +79,29 @@ much between sequential reads). `-1.0` clears it.
 
 Since b53/b54 the agent keeps that property honest (`bass_sync()`, a 5 s watchdog) and logs
 `BASS disabledCells [...] -> [...] (this cell was muting itself)` when it corrects it.
+
+## Debugging "the grouped speakers drop out for a moment, every hour"
+
+Captured 2026-10-17/18 (stock firmware had the same symptom for months). Signature on every **secondary** of a
+group, within ~16 ms of each other, at the same minute and second every hour (here :34:12, often a second one 5–7 s
+later): `jackd ... NetworkDepacketizer.cpp:210: FIFO underrun after N good pkts` with N ≈ 720 000 = one hour at
+200 packets/s. A cell alone in its room never logs it (it has no network stream). Restarting cells or APs does not
+move the minute; restarting the gateway does.
+
+What the packet-level capture showed (per-packet timestamps on the primary and four secondaries, 5 Hz
+`iw station dump`):
+- The primary **sent steadily** on both paths (max gap ~55 ms).
+- Every secondary's **home-Wi-Fi path went dark for 0.2–0.5 s**, twice, 5 s apart; the Syfi (cell-to-cell, `wsyng0`)
+  path was unaffected (dualPath carried it that hour, so no underrun was logged).
+- At those exact moments the primary's `tx failed` jumped by 70–80 (the AP stopped acknowledging); no retries, no
+  beacon loss, steady signal on the receivers.
+So the AP's 5 GHz radio briefly stops serving the BSS: an off-channel scan. Every radio of both U6 Enterprise APs
+was on **Channel: Auto**, which has the APs scan periodically on a schedule the controller (in the gateway) keeps.
+
+Ruled out on the way: WPA group rekey (no FW supplicant on this brcmfmac — `FWSUP feature check failed` — and
+wpa_supplicant never logged one), cell bgscan (`bgscan=""`), DHCP / NTP / IPv6 RA / IGMP (all regular, none hourly),
+the sender stalling. A separate irregular dropout (around :20 on some days, 1 s+) has the same receive-side signature.
+
+Fixes, in order: fixed channels on the APs (5 GHz 153 / 36 as they sit, 2.4 GHz 1); then, if anything is left, a
+larger SourceCast network buffer (`maxNetworkLatency_ms` 50 -> ~250) so a short AP hiccup is absorbed. Note b61:
+`/api/discover` no longer sweeps the /24 on every call (it ARP-stormed the Wi-Fi every 15 s while an app was open).

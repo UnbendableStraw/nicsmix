@@ -133,6 +133,23 @@ window.cycleTheme=function(){t=T[(T.indexOf(t)+1)%T.length];try{localStorage.set
   <p class=hint>Soundcheck plays chirps from every speaker in turn (about a minute per speaker) and measures positions, orientation, walls and room EQ on the speakers themselves; playback is paused meanwhile. Keep the room quiet. <b>×3</b> runs it three times and solves the layout from the median of the measurements — use it when a single run looks off. Results are stored by this firmware — no Syng account involved.</p>
 </div>
 
+<div class=card id=streamcard><h2>GROUP STREAM <span><button class="btn sm" id=strefresh>Refresh</button></span></h2>
+  <div class=muted id=nbinfo>…</div>
+  <div class=rowb style="margin-top:8px"><label class=muted style="flex:1;display:flex;gap:10px;align-items:center">Network buffer
+    <input type=range id=nbms min=20 max=500 step=10 value=50 style="flex:1"><b id=nbval style="min-width:56px;text-align:right">50 ms</b></label>
+    <button class="btn sm" id=nbapply disabled>Apply to the room</button></div>
+  <p class=hint>How far ahead the primary streams to the other speakers (Syng's SourceCast <code>maxNetworkLatency_ms</code>, stock 50 ms).
+    A gap in the Wi-Fi shorter than this is inaudible; a longer one is a dropout. More buffer = more delay before sound starts (music
+    doesn't care). Applying restarts the audio engine on every speaker in the room — a few seconds of silence.</p>
+  <h2 style="margin-top:14px">STREAM DROPOUTS <span><button class="btn sm" id=und24>24 h</button><button class="btn sm" id=und7>7 days</button></span></h2>
+  <canvas id=undtl style="width:100%;height:150px;display:block"></canvas>
+  <div class=muted style="margin:10px 0 4px;font-size:12px">By minute past the hour — an hourly culprit stands out as one tall bar</div>
+  <canvas id=undmin style="width:100%;height:90px;display:block"></canvas>
+  <div id=undleg class=muted style="display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;font-size:12px"></div>
+  <p class=hint>Each mark is a moment the stream from the primary ran dry on that speaker (its jackd logs "FIFO underrun"); taller =
+    longer. The primary itself never logs these — it is the sender. A speaker alone in its room has no stream and shows nothing.</p>
+</div>
+
 <div class=card id=fwcard><h2>FIRMWARE <span><button class="btn sm" id=fwrefresh>Refresh</button></span></h2>
   <div id=fwinfo class=muted>…</div>
   <div class=rowb style="margin-top:10px">
@@ -552,7 +569,59 @@ $('#fwroom').onclick=async()=>{if(!confirm('Install on every speaker in the room
   try{await api('/api/firmware/room',{action:'install'},primaryIp);toast('Room update started');}catch(e){toast(e.message,true);} loadFw();};
 $('#fwroll').onclick=async()=>{if(!confirm('Reboot into the other slot? (whatever is there now)'))return; try{await api('/api/firmware/rollback',{});toast('Rebooting into the other slot');}catch(e){toast(e.message,true);}};
 
-async function refreshAll(){await loadMe();loadWifi();loadRoom();loadDiscover();loadHK();loadRing();loadFw();}
+// ---- group stream: buffer + dropout history ----
+let NB=null, UND=null, UNDH=24;
+const UCOL=['#5ab0ff','#79de96','#e0b35a','#d98cf2','#ff7a6b','#6fe0d6','#c9c9c9','#f2d16b'];
+function nbShow(){
+  const v=+$('#nbms').value; $('#nbval').textContent=v+' ms';
+  $('#nbapply').disabled=!NB||(!NB.mixed&&NB.ms===v);
+}
+async function loadNB(){
+  try{NB=await api('/api/netbuffer');
+    const cs=NB.cells.filter(c=>c.ms!=null);
+    $('#nbinfo').innerHTML=NB.mixed?('Not the same on every speaker: '+cs.map(c=>`${c.name||short(c.serial)} ${c.ms} ms`).join(' · '))
+      :`${NB.ms} ms on ${cs.length} speaker${cs.length==1?'':'s'}${cs.length&&cs[0].dualPath?' · two paths (Wi-Fi + SyFi)':''}`;
+    if(NB.ms!=null){$('#nbms').value=NB.ms;} nbShow();
+  }catch(e){$('#nbinfo').textContent='n/a: '+e.message;}
+}
+$('#nbms').oninput=nbShow;
+$('#nbapply').onclick=async()=>{const v=+$('#nbms').value;
+  if(!confirm(`Set the network buffer to ${v} ms on every speaker in this room?\n\nEach speaker restarts its audio engine: a few seconds of silence.`))return;
+  try{await api('/api/netbuffer',{ms:v});toast('Buffer set to '+v+' ms — audio restarting');setTimeout(loadNB,6000);}catch(e){toast(e.message,true);}};
+function canvasCtx(c){const r=c.getBoundingClientRect(),d=window.devicePixelRatio||1;c.width=Math.max(1,r.width*d);c.height=Math.max(1,r.height*d);
+  const x=c.getContext('2d');x.scale(d,d);return [x,r.width,r.height];}
+function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()||'#888';}
+function drawUND(){
+  if(!UND)return;
+  const cells=UND.cells.filter(c=>c.events);
+  const now=UND.now, H=UNDH, bin=H<=24?900:3600, nb=Math.ceil(H*3600/bin), t0=now-H*3600;
+  // timeline, stacked by speaker, height = sum of log2(burst)+1
+  let [x,w,h]=canvasCtx($('#undtl')); x.clearRect(0,0,w,h);
+  const sums=Array.from({length:nb},()=>cells.map(()=>0));
+  cells.forEach((c,ci)=>c.events.forEach(e=>{if(e.t<t0)return;const b=Math.min(nb-1,Math.floor((e.t-t0)/bin));sums[b][ci]+=1+Math.log2(e.burst||1);}));
+  const mx=Math.max(1,...sums.map(s=>s.reduce((a,b)=>a+b,0))), bw=w/nb, ph=h-16;
+  x.strokeStyle=css('--line');x.beginPath();x.moveTo(0,ph+.5);x.lineTo(w,ph+.5);x.stroke();
+  sums.forEach((s,i)=>{let y=ph;s.forEach((v,ci)=>{if(!v)return;const hh=v/mx*(ph-4);x.fillStyle=UCOL[ci%UCOL.length];x.fillRect(i*bw+.5,y-hh,Math.max(1,bw-1),hh);y-=hh;});});
+  x.fillStyle=css('--muted');x.font='10px system-ui';
+  const step=H<=24?6:24; for(let k=0;k<=H;k+=step){const tt=t0+k*3600,px=k/H*w;const d=new Date(tt*1000);
+    x.fillText(H<=24?d.toLocaleTimeString([], {hour:'numeric'}):d.toLocaleDateString([], {weekday:'short'}),Math.min(w-30,px+2),h-3);}
+  // by minute past the hour (local time)
+  [x,w,h]=canvasCtx($('#undmin')); x.clearRect(0,0,w,h);
+  const mins=Array.from({length:60},()=>cells.map(()=>0));
+  cells.forEach((c,ci)=>c.events.forEach(e=>{if(e.t<t0)return;mins[new Date(e.t*1000).getMinutes()][ci]+=1;}));
+  const mm=Math.max(1,...mins.map(s=>s.reduce((a,b)=>a+b,0))), mw=w/60, mh=h-14;
+  mins.forEach((s,i)=>{let y=mh;s.forEach((v,ci)=>{if(!v)return;const hh=v/mm*(mh-4);x.fillStyle=UCOL[ci%UCOL.length];x.fillRect(i*mw+.5,y-hh,Math.max(1,mw-1),hh);y-=hh;});});
+  x.fillStyle=css('--muted');x.font='10px system-ui';[0,15,30,45].forEach(m=>x.fillText(':'+String(m).padStart(2,'0'),m*mw+1,h-2));
+  const top=mins.map((s,i)=>[s.reduce((a,b)=>a+b,0),i]).sort((a,b)=>b[0]-a[0])[0];
+  $('#undleg').innerHTML=cells.map((c,ci)=>`<span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${UCOL[ci%UCOL.length]};margin-right:5px"></span>${c.name||'Cell '+short(c.serial)} · ${c.events.filter(e=>e.t>=t0).length}${c.role==='primary'?' (sender)':''}</span>`).join('')
+    +(top&&top[0]>=3?`<span style="flex-basis:100%">Most at <b>:${String(top[1]).padStart(2,'0')}</b> past the hour (${top[0]} of ${cells.reduce((a,c)=>a+c.events.filter(e=>e.t>=t0).length,0)})</span>`:'');
+}
+async function loadUND(h){UNDH=h||UNDH;$('#und24').classList.toggle('pri',UNDH===24);$('#und7').classList.toggle('pri',UNDH!==24);
+  try{UND=await api('/api/underruns?hours='+UNDH);drawUND();}catch(e){$('#undleg').textContent='n/a: '+e.message;}}
+$('#und24').onclick=()=>loadUND(24); $('#und7').onclick=()=>loadUND(168);
+$('#strefresh').onclick=()=>{loadNB();loadUND();};
+window.addEventListener('resize',()=>drawUND());
+async function refreshAll(){await loadMe();loadWifi();loadRoom();loadDiscover();loadHK();loadRing();loadFw();loadNB();loadUND(24);}
 window.addEventListener('resize',sizeCanvas);
 refreshAll();
 </script></body></html>

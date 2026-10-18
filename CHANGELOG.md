@@ -2,6 +2,24 @@
 
 Agent builds are numbered bNN; the published `agent/syng-agent.py` is the latest.
 
+## b62 + apps — group stream controls — 2026-10-18
+- **Network buffer control**: the room's SourceCast buffer (`maxNetworkLatency_ms`, stock 50 ms) per speaker, with a
+  slider and *Apply to the room* (asks first; each speaker restarts its audio engine, sound mode and field restored;
+  the first original is kept as `SourceCast.conf.orig`). `GET/POST /api/netbuffer`. Left at 50 ms.
+- **Stream dropout history**: every member's jackd "FIFO underrun" events (with burst size) over 24 h / 7 days,
+  stacked by speaker, and by minute past the hour — the hourly :34 shows as one tower. `GET /api/underruns?hours=N`.
+- In the setup page (GROUP STREAM card), the iOS app (Setup → Group stream, Swift Charts) and Android (Setup → Group
+  stream).
+- Cleaned the leftover diagnostics off every cell (old mic-check recordings and scratch scripts in /tmp, which is RAM).
+
+## b61 + investigation — the hourly dropout — 2026-10-18
+- **Found where the hourly group dropout comes from**: at :34:12 every hour (and 5 s later) the access point's
+  5 GHz radio stops serving clients for 0.2–0.5 s — the primary keeps sending, its frames go unacknowledged, every
+  secondary's Wi-Fi path goes dark at once. All AP radios were on Channel: Auto (periodic off-channel scans). Write-up
+  in docs/HACKING.md ("the grouped speakers drop out for a moment, every hour").
+- **b61: `/api/discover` stops ARP-storming the Wi-Fi.** It swept the whole /24 on every call and the apps call it
+  every 15 s; now a 30 s cache, a full sweep at most every 10 min, known cells + mDNS in between.
+
 ## apps — Troubadour Kids (iOS / iPadOS) — 2026-10-18
 - **A kids' app**: room picker (scan only) and the sound field with a big volume slider, nothing else. The field is
   visual-only (`FieldModel.visualOnly`): the puck, snapping and Spatial work and look the same but never touch the
