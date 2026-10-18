@@ -316,14 +316,15 @@ final class FieldModel: ObservableObject {
             Haptics.tap(0.5)
             return
         }
-        // the volume rim: only where the volume currently sits, and only out on the rim itself —
-        // a tap anywhere else along the arc used to jump the volume to that value
+        // the volume rim: grab it anywhere along the arc, then the volume moves by how far the finger
+        // travels — never to where it touched. A tap changes nothing, so it can't jump the volume up.
         let d = hypot(Double(p.x - centre.x), Double(p.y - centre.y))
         let a = atan2(Double(p.y - centre.y), Double(p.x - centre.x))
-        if cfg.showVolume, d > roomR * 1.0, d < roomR * 1.35, abs(a - .pi / 2) < Self.volHalf + 0.06 {
-            guard abs(volFrom(p) - volume) <= 0.06 else { return }
+        if cfg.showVolume, d > roomR * 1.0, d < roomR * 1.5, abs(a - .pi / 2) < Self.volHalf + 0.12 {
             grab = .volume
-            Haptics.tap(0.5)
+            volGrabFinger = volFrom(p)
+            volGrabBase = volTarget
+            volEngaged = false
         }
     }
 
@@ -370,7 +371,15 @@ final class FieldModel: ObservableObject {
             halfTarget = min(max(h, cfg.minHalfDeg * .pi / 180), cfg.maxHalfDeg * .pi / 180)
             send(false)
         case .volume:
-            let v = volFrom(p)
+            let delta = volFrom(p) - volGrabFinger
+            if !volEngaged {
+                guard abs(delta) > 0.012 else { return }        // a small dead zone, so a tap stays a tap
+                volEngaged = true
+                volGrabFinger = volFrom(p)                       // start counting from here: no step on engage
+                Haptics.tap(0.5)
+                return
+            }
+            let v = min(max(volGrabBase + delta, 0), 1)
             if Int(v * 20) != Int(volTarget * 20) { Haptics.tap(0.4) }
             volTarget = v; sendVolume(false)
         }
@@ -379,7 +388,7 @@ final class FieldModel: ObservableObject {
     func end() {
         guard let g = grab else { return }
         grab = nil; liftDot = nil
-        if g == .volume { sendVolume(true) } else if g != .lift { send(true) }
+        if g == .volume { if volEngaged { sendVolume(true) } } else if g != .lift { send(true) }
     }
 
     /// Two-finger rotate aims the field; pinch sets its width. Neither is possible on the web page.
@@ -411,6 +420,9 @@ final class FieldModel: ObservableObject {
         hypot(Double(a.x - b.x), Double(a.y - b.y)) <= r
     }
     static let volHalf = 52.0 * Double.pi / 180
+    private var volGrabFinger: Double = 0      // where on the arc the finger was when the drag engaged (0..1)
+    private var volGrabBase: Double = 0        // the volume at that moment
+    private var volEngaged = false
     private func volFrom(_ p: CGPoint) -> Double {
         let a = atan2(Double(p.y - centre.y), Double(p.x - centre.x))
         let lo = Double.pi / 2 - Self.volHalf, hi = Double.pi / 2 + Self.volHalf

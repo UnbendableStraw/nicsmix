@@ -57,6 +57,12 @@ SwiftUI `.spring(response ≈ 0.42, dampingFraction ≈ 1.0)`. The grab animatio
 puck (`CGAffineTransformScale`) and nudges it a few points. The web field integrates this
 spring per frame (`-K·x − C·v`, K=218.566, C=29.568).
 
+### Latency (b57)
+A handle push is `source_set_stem_positions` → the source's shader → `set_object_positions` on the runtime,
+synchronously, in 30–60 ms; cellbroker's 300 ms debounce only gates the cloud write (`skip_persist` skips it).
+The agent must never queue pushes: `/api/soundfield` updates `FIELD` and returns, and a single latest-wins
+worker sends whatever `FIELD` is when it is free. Keep D-Bus reads on that path off the shared `DBUS_LOCK`.
+
 ## Spatial field visuals
 
 A bright, glittery cyan **two-lobe cloud** emanates from the puck: a bright core plus two

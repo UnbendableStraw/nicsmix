@@ -114,10 +114,14 @@ struct FieldCanvas: UIViewRepresentable {
     }
 }
 
-/// While the field is on screen the navigation controller's edge-swipe is off: a drag that starts
-/// near the left edge belongs to the puck, not to "back to Rooms". The Back button still works.
+/// While the field is on screen, nothing the navigation controller owns may turn a drag into "back to
+/// Rooms": not the edge swipe, and not the full-screen swipe-back recent iOS added (a horizontal drag
+/// anywhere in the content — which is what kept catching the puck). Every pan recogniser on the
+/// navigation controller's view is switched off while the Room tab is showing and put back exactly as it
+/// was when it goes away. The Back button (ours, in RoomView) still works.
 struct DisablesSwipeBack: UIViewControllerRepresentable {
     final class Holder: UIViewController {
+        private var disabled: [UIGestureRecognizer] = []
         private var nav: UINavigationController? {
             var p: UIViewController? = parent
             while let c = p {
@@ -126,14 +130,25 @@ struct DisablesSwipeBack: UIViewControllerRepresentable {
             }
             return navigationController
         }
-        override func viewWillAppear(_ animated: Bool) {
-            super.viewWillAppear(animated)
-            nav?.interactivePopGestureRecognizer?.isEnabled = false
+        private func block() {
+            guard disabled.isEmpty, let n = nav else { return }
+            var found: [UIGestureRecognizer] = []
+            if let edge = n.interactivePopGestureRecognizer { found.append(edge) }
+            for g in n.view.gestureRecognizers ?? [] where g is UIPanGestureRecognizer {
+                if !found.contains(where: { $0 === g }) { found.append(g) }
+            }
+            for g in found where g.isEnabled {
+                g.isEnabled = false
+                disabled.append(g)
+            }
         }
-        override func viewWillDisappear(_ animated: Bool) {
-            super.viewWillDisappear(animated)
-            nav?.interactivePopGestureRecognizer?.isEnabled = true
+        private func unblock() {
+            for g in disabled { g.isEnabled = true }
+            disabled.removeAll()
         }
+        override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); block() }
+        override func viewDidAppear(_ animated: Bool) { super.viewDidAppear(animated); block() }   // first load: the nav is only reachable now
+        override func viewWillDisappear(_ animated: Bool) { super.viewWillDisappear(animated); unblock() }
     }
     func makeUIViewController(context: Context) -> Holder { Holder() }
     func updateUIViewController(_ c: Holder, context: Context) {}

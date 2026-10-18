@@ -8,6 +8,7 @@ import WidgetKit
 struct RoomView: View {
     let room: Room
     @State private var tab = 0
+    @Environment(\.dismiss) private var dismiss
     var body: some View {
         TabView(selection: $tab) {
             RoomMainView(room: room).tabItem { Label("Room", systemImage: "circle.dotted") }.tag(0)
@@ -16,6 +17,22 @@ struct RoomView: View {
         }
         .navigationTitle(room.name)
         .navigationBarTitleDisplayMode(.inline)
+        // On the Room tab the system back button is swapped for ours: without the system one iOS starts no
+        // back-swipe at all, so dragging the puck can never pop to Rooms. The other tabs keep the stock one.
+        .navigationBarBackButtonHidden(tab == 0)
+        .toolbar {
+            if tab == 0 {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button { dismiss() } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left").font(.body.weight(.semibold))
+                            Text("Rooms")
+                        }
+                    }
+                    .tint(.white)
+                }
+            }
+        }
         .onAppear {
             // the widgets and their buttons act on the room last opened here
             Shared.agentIP = room.agent?.ip; Shared.roomName = room.name
@@ -172,6 +189,55 @@ struct RoomMainView: View {
     }
 }
 
+/// A volume bar you drag rather than tap: the value moves by how far the finger travels, never to where it
+/// touched, and a tap changes nothing — so it cannot suddenly jump the volume up. Haptic tick every 5 %.
+struct RelativeSlider: View {
+    let value: Double
+    let onChange: (Double, Bool) -> Void
+    @State private var base: Double?
+    @State private var shown: Double?
+    @State private var lastTick = -1
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = max(geo.size.width, 1)
+            let v = shown ?? value
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.surface2).frame(height: 8)
+                Capsule().fill(Color.white).frame(width: max(8, w * CGFloat(v)), height: 8)
+                Circle().fill(Color.white).frame(width: 26, height: 26)
+                    .shadow(color: .black.opacity(0.4), radius: 3, y: 1)
+                    .offset(x: (w - 26) * CGFloat(v))
+            }
+            .frame(height: 30)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 6)
+                    .onChanged { g in
+                        let start = base ?? value
+                        if base == nil { base = value }
+                        let nv = min(max(start + Double(g.translation.width / w), 0), 1)
+                        shown = nv
+                        let step = Int(nv * 20)
+                        if step != lastTick { lastTick = step; Haptics.tap(0.4) }
+                        onChange(nv, false)
+                    }
+                    .onEnded { _ in
+                        if let v = shown { onChange(v, true) }
+                        base = nil; shown = nil
+                    }
+            )
+        }
+        .frame(height: 30)
+        .overlay(alignment: .trailing) {
+            Text("\(Int(((shown ?? value) * 100).rounded()))")
+                .font(.caption.monospacedDigit()).foregroundStyle(Theme.muted)
+                .offset(y: 24)
+        }
+        .padding(.bottom, 14)
+    }
+}
+
 /// A capsule that hugs its label — the footer row scrolls, so these are not full width.
 struct Chip: ButtonStyle {
     var filled = false
@@ -201,10 +267,8 @@ struct SoundModeSheet: View {
                             .font(.caption).foregroundStyle(Theme.muted)
                     }
                     Card("Volume") {
-                        Slider(value: Binding(get: { m.volume }, set: { m.setVolume($0, final: false) }),
-                               in: 0...1, onEditingChanged: { editing in if !editing { m.setVolume(m.volume, final: true) } })
-                            .tint(.white)
-                        Text("The rim at the bottom of the field does this too — drag from where the volume already sits.")
+                        RelativeSlider(value: m.volume) { v, final in m.setVolume(v, final: final) }
+                        Text("Drag anywhere on the bar: the volume moves with your finger from where it is, and a tap does nothing. The rim at the bottom of the field works the same way.")
                             .font(.caption).foregroundStyle(Theme.muted)
                     }
                 }

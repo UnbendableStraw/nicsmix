@@ -55,11 +55,27 @@ class FieldSurfaceView(ctx: Context, val model: FieldModel) : GLSurfaceView(ctx)
         }
     }
 
+    /** Keep the system back gesture off the field: a drag starting near either edge is ours. Android
+     *  honours up to 200 dp of exclusion per edge, so the band is centred on the room. */
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            val h = bottom - top; val w = right - left
+            val band = (200 * resources.displayMetrics.density).toInt().coerceAtMost(h)
+            val y0 = ((h - band) / 2).coerceAtLeast(0)
+            val edge = (48 * resources.displayMetrics.density).toInt()
+            systemGestureExclusionRects = listOf(
+                android.graphics.Rect(0, y0, edge, y0 + band),
+                android.graphics.Rect(w - edge, y0, w, y0 + band))
+        }
+    }
+
     override fun onTouchEvent(e: MotionEvent): Boolean {
         scale.onTouchEvent(e)
         taps.onTouchEvent(e)
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                parent?.requestDisallowInterceptTouchEvent(true)   // no scroll / pager parent may steal the drag
                 pointerId = e.getPointerId(0)
                 val x = e.x.toDouble(); val y = e.y.toDouble()
                 queueEvent { model.begin(x, y) }

@@ -164,6 +164,7 @@ class FieldModel(val agent: Agent?) {
     var grab: Grab? = null
     var liftDot: Pair<Double, Double>? = null
     private var grabOx = 0.0; private var grabOy = 0.0
+    private var volGrabFinger = 0.0; private var volGrabBase = 0.0; private var volEngaged = false
     private var touched = 0L
 
     // ---- what the UI shows ----
@@ -332,9 +333,11 @@ class FieldModel(val agent: Agent?) {
         }
         val d = hypot(x - cx, y - cy)
         val a = atan2(y - cy, x - cx)
-        if (showVolume && d > roomR * 1.0 && d < roomR * 1.35 && abs(a - Math.PI / 2) < VOL_HALF + 0.06) {
-            if (abs(volFrom(x, y) - volume) > 0.06) return    // only where the volume already sits
-            grab = Grab.Volume; haptic?.invoke()
+        // the volume rim: grab it anywhere, the volume then moves by how far the finger travels — never to
+        // where it touched, and a tap changes nothing
+        if (showVolume && d > roomR * 1.0 && d < roomR * 1.5 && abs(a - Math.PI / 2) < VOL_HALF + 0.12) {
+            grab = Grab.Volume
+            volGrabFinger = volFrom(x, y); volGrabBase = volT; volEngaged = false
         }
     }
 
@@ -380,7 +383,13 @@ class FieldModel(val agent: Agent?) {
                 send(false)
             }
             is Grab.Volume -> {
-                val v = volFrom(x, y)
+                val delta = volFrom(x, y) - volGrabFinger
+                if (!volEngaged) {
+                    if (abs(delta) <= 0.012) return            // a small dead zone, so a tap stays a tap
+                    volEngaged = true; volGrabFinger = volFrom(x, y); haptic?.invoke()
+                    return
+                }
+                val v = min(max(volGrabBase + delta, 0.0), 1.0)
                 if ((v * 20).toInt() != (volT * 20).toInt()) haptic?.invoke()
                 volT = v; sendVolume(false)
             }
@@ -390,7 +399,7 @@ class FieldModel(val agent: Agent?) {
     fun end() {
         val g = grab ?: return
         grab = null; liftDot = null
-        if (g is Grab.Volume) sendVolume(true) else if (g !is Grab.Lift) send(true)
+        if (g is Grab.Volume) { if (volEngaged) sendVolume(true) } else if (g !is Grab.Lift) send(true)
     }
 
     fun rotateBy(delta: Double) { if (spatial) { touched = System.nanoTime(); dirT += delta; send(false) } }

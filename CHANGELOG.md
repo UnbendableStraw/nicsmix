@@ -2,6 +2,29 @@
 
 Agent builds are numbered bNN; the published `agent/syng-agent.py` is the latest.
 
+## b57 — 2026-10-18
+- **Moving the sound field is heard straight away.** cellbroker applies a new position in 30–60 ms, but each
+  `POST /api/soundfield` took about a second in the agent and the agent served them one at a time, so a
+  two-second drag (a post every 110 ms) took 15 s to drain and the sound trailed the finger by seconds. The
+  second went on D-Bus: every move read each source's `active` flag and the bass-distribution set through the
+  shared bus connection, whose lock the status poll holds for most of a second. Now a move only updates the
+  field and returns (~80 ms round trip from the LAN); one worker pushes the latest position, so moves that
+  arrive mid-push merge into the next one and nothing can queue; `active` is read on the controls connection
+  and cached 1.5 s; the bass check runs only when the snap target changes. Same drag: done 0.5 s after the
+  last move, not 13 s. What remains is the stream's normal playout delay, which the Syng app has too.
+
+## apps — touch fixes — 2026-10-17
+- **No more accidental "back to Rooms" while dragging the field (iOS).** Recent iOS added swipe-back from
+  anywhere in the content, not just the screen edge, and only the edge swipe was being blocked. On the Room
+  tab every pan recogniser the navigation controller owns is now switched off (and restored exactly on the
+  way out), and the system back button is replaced by our own "‹ Rooms", which stops iOS starting a
+  back-swipe at all. The other tabs keep the stock behaviour. Android: the field excludes itself from the
+  system back gesture along both edges, and no parent can intercept a drag that starts on it.
+- **Volume never jumps.** The rim at the bottom of the field can be grabbed anywhere along the arc; the volume
+  then moves by how far the finger travels from where it already is, and a tap changes nothing (a small dead
+  zone before the drag engages). Same for the volume bar in the Sound sheet on iOS, which was a stock slider
+  that jumped to the tapped point. Both platforms.
+
 ## b56 — 2026-10-17
 - **The real cause of "a speaker plays half a second behind" — the agent itself.** The keeper ran
   `ip addr replace` on both USB setup ports of every cell every 90 s. `replace` re-installs an address that is

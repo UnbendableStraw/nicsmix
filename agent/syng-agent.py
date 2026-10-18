@@ -772,7 +772,7 @@ CELL = CellRPC() if _websockets else None
 FIELD = {"ux": 0.0, "uy": 0.0, "rot": 90.0, "width": 95.0, "radius": 0.0, "spatial": False, "snap": "", "version": "0"}
 FIELD_DIRTY = [False]
 
-def set_soundfield(ux=None, uy=None, rot=None, width=None, radius=None, spatial=None, snap=None, **legacy):
+def set_soundfield(ux=None, uy=None, rot=None, width=None, radius=None, spatial=None, snap=None, wait=False, **legacy):
     """Set the stereo upmix 'handle' exactly like the Syng app does: x/y in room-circle units
     (reference circle = 1, y up), rotation (deg, CCW, 90 = the top of the room view), surround_width
     (deg, the dot half-angle) and radius (0 = classic single-puck stereo; 0.7 = spatial default).
@@ -788,10 +788,34 @@ def set_soundfield(ux=None, uy=None, rot=None, width=None, radius=None, spatial=
     FIELD["version"] = str(uuid.uuid4()).upper()
     try: FIELD_DIRTY[0] = True
     except Exception: pass
+    if wait: return _field_push_now()
+    _FPUSH["ev"].set()
+    if _FPUSH["thr"] is None or not _FPUSH["thr"].is_alive():
+        _FPUSH["thr"] = threading.Thread(target=_field_push_loop, daemon=True); _FPUSH["thr"].start()
+    return "queued"
+
+# A drag posts every ~110 ms. Each post only updates FIELD; this one worker sends whatever FIELD is when it gets
+# round to it, so posts that arrive while a push is in flight collapse into the next one (b57).
+_FPUSH = {"ev": threading.Event(), "thr": None, "snap": None, "n": 0, "ms": 0.0}
+
+def _field_push_now():
+    t = time.time()
     n = push_handles()
-    try: bass_sync("field")
-    except Exception as e: log("BASS field: %s" % e)
+    _FPUSH["n"] = n; _FPUSH["ms"] = round((time.time() - t) * 1000, 1)
+    snap = FIELD.get("snap") or ""
+    if snap != _FPUSH["snap"]:          # only a snap change can change cellbroker's disabled set
+        _FPUSH["snap"] = snap
+        try: bass_sync("field")
+        except Exception as e: log("BASS field: %s" % e)
     return n
+
+def _field_push_loop():
+    while True:
+        _FPUSH["ev"].wait(30)
+        if not _FPUSH["ev"].is_set(): continue
+        _FPUSH["ev"].clear()
+        try: _field_push_now()
+        except Exception as e: log("field push: %s" % e)
 
 def field_handles():
     if SETTINGS.get("sound_mode") == "direct":
@@ -804,16 +828,32 @@ def field_handles():
                   "snapped_rotation": round(FIELD["rot"], 3) if FIELD.get("snap") else 0.0,
                   "version": FIELD["version"]}}
 
+_act_cache = {"t": 0.0, "ids": []}
+def active_music_ids():
+    """Music sources whose Runtime says active, read on the controls connection (the shared one's lock is held
+    by the status poll for most of a second) and cached 1.5 s — a drag pushes many times a second (b57)."""
+    now = time.time()
+    if now - _act_cache["t"] < 1.5: return _act_cache["ids"]
+    ids = []
+    for sid in source_ids():
+        if not is_music(sid): continue
+        try:
+            with CTRL_LOCK:
+                a = dbus.Interface(CTRL_BUS.get_object(ASRV, "/com/syng/AudioSource/Runtime/" + sid), PROPS).Get(RUN_IF, "active")
+            if bool(a): ids.append(sid)
+        except Exception:
+            pass
+    _act_cache.update({"t": now, "ids": ids})
+    return ids
+
 def push_handles(extra=None):
     """source_set_stem_positions for every active music source (skip_persist: nothing goes to the cloud).
     extra: more kwargs for cellbroker, e.g. a reference_circle override for a live layout preview."""
     n = 0
     if CELL is None: return 0
     handles = field_handles()
-    for sid in source_ids():
-        if not is_music(sid): continue
+    for sid in active_music_ids():
         try:
-            if not get_all(ASRV, "/com/syng/AudioSource/Runtime/" + sid, RUN_IF).get("active"): continue
             CELL.call("source_set_stem_positions", dict({"source_id": sid, "handles": handles, "skip_persist": True}, **(extra or {}))); n += 1
         except Exception as e:
             log("stem positions %s: %s" % (sid, e))
@@ -1145,7 +1185,7 @@ def vision_write(name, content):
 # ====================================================================================
 import socket, struct, random, ipaddress, math, re, threading, subprocess, urllib.request
 
-AGENT_BUILD = "b56"
+AGENT_BUILD = "b57"
 SSH_PUB = "/data/home/root/.ssh/id_ed25519.pub"
 HOST_PUB = "/data/ssh/ssh_host_ed25519_key.pub"
 CLOUD_STATE_FILE = "/data/syng/cloud_state.json"
@@ -2848,7 +2888,7 @@ def field_keeper_loop():
             fresh = [sid for sid, a in now.items() if a and not active.get(sid)]
             active = now
             if fresh and (FIELD.get("spatial") or FIELD.get("snap") or abs(FIELD.get("ux", 0)) > 0.01 or abs(FIELD.get("uy", 0)) > 0.01 or abs(FIELD.get("rot", 90) - 90) > 0.5):
-                time.sleep(1.5); n = set_soundfield(); log("field re-applied to %s (%d)" % (fresh, n))
+                time.sleep(1.5); n = set_soundfield(wait=True); log("field re-applied to %s (%d)" % (fresh, n))
         except Exception as e: log("field keeper: %s" % e)
         time.sleep(2)
 
@@ -2879,7 +2919,7 @@ def scene_apply(sc, with_source=False):
     if with_source and sc.get("source"):
         try: set_source(sc["source"], True); done["source"] = sc["source"]; time.sleep(1.0)
         except Exception as e: done["source"] = str(e)
-    if sc.get("field"): done["field"] = set_soundfield(**{k: sc["field"].get(k) for k in ("ux", "uy", "rot", "width", "radius", "spatial", "snap") if k in sc["field"]})
+    if sc.get("field"): done["field"] = set_soundfield(wait=True, **{k: sc["field"].get(k) for k in ("ux", "uy", "rot", "width", "radius", "spatial", "snap") if k in sc["field"]})
     led = sc.get("led") or {}
     if led:
         body = {"mode": led.get("mode") or "off"}
@@ -5068,7 +5108,7 @@ class H(BaseHTTPRequestHandler):
             elif p.startswith("/api/soundfield"):
                 keys = ("ux", "uy", "rot", "width", "radius", "spatial", "snap"); args = {k: body.get(k) for k in keys if k in body}
                 r = set_soundfield(**args)
-                log("SOUNDFIELD %s -> set=%s" % (args, r))
+                if body.get("final", True) is not False: log("SOUNDFIELD %s -> %s (last push %s src, %s ms)" % (args, r, _FPUSH["n"], _FPUSH["ms"]))
                 self._json(200, dict(FIELD, ok=True, set=r))
             elif p.startswith("/api/led/tune"):
                 pairs = [(flag, str(body[k])) for k, flag in
@@ -5113,7 +5153,7 @@ class H(BaseHTTPRequestHandler):
             self._json(500, {"error": traceback.format_exc().splitlines()[-1]})
 
 def main():
-    sys.stderr.write("syng-agent (b56) on http://0.0.0.0:%d\n" % PORT)
+    sys.stderr.write("syng-agent (b57) on http://0.0.0.0:%d\n" % PORT)
     threading.Thread(target=viz_fanout_loop, daemon=True).start()
     threading.Thread(target=viz_web_loop, daemon=True).start()
     lc_start()
