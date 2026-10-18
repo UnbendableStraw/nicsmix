@@ -114,55 +114,27 @@ struct FieldCanvas: UIViewRepresentable {
     }
 }
 
-/// The Sound Field tab: the field itself, drawn and driven natively, plus the controls that are
-/// clearer as buttons than as gestures.
-struct SoundFieldView: View {
-    let room: Room
-    @StateObject private var m: FieldModel
-    init(room: Room) {
-        self.room = room
-        _m = StateObject(wrappedValue: FieldModel(agent: room.agent))
-    }
-
-    var body: some View {
-        GeometryReader { geo in
-            VStack(spacing: 0) {
-                FieldCanvas(model: m)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
-                controls
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, max(geo.safeAreaInsets.bottom, 8))
+/// While the field is on screen the navigation controller's edge-swipe is off: a drag that starts
+/// near the left edge belongs to the puck, not to "back to Rooms". The Back button still works.
+struct DisablesSwipeBack: UIViewControllerRepresentable {
+    final class Holder: UIViewController {
+        private var nav: UINavigationController? {
+            var p: UIViewController? = parent
+            while let c = p {
+                if let n = c as? UINavigationController { return n }
+                p = c.parent
             }
+            return navigationController
         }
-        .background(Theme.bg.ignoresSafeArea())
-        .onAppear { m.start() }
-        .onDisappear { m.stop() }
-    }
-
-    private var controls: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 10) {
-                Circle().fill(m.live ? Theme.live : Theme.muted.opacity(0.4)).frame(width: 7, height: 7)
-                Text(m.sourceTitle).font(.subheadline.weight(.semibold))
-                Spacer()
-                Text(m.spatialOn ? "\(m.widthDeg)° wide · \(m.aimDeg)°" : "All around")
-                    .font(.caption.monospacedDigit()).foregroundStyle(Theme.muted)
-                Text("\(m.volPct)").font(.subheadline.weight(.semibold).monospacedDigit()).frame(width: 30, alignment: .trailing)
-            }
-            HStack(spacing: 8) {
-                Button("Centre") { m.centrePuck() }.buttonStyle(Capsule_())
-                Button(m.spatialOn ? "All around" : "Spatial") { m.setSpatial(!m.spatialOn) }
-                    .buttonStyle(Capsule_(filled: m.spatialOn))
-            }
-            Text(m.spatialOn
-                 ? "Drag the puck to move the sound, the notch to aim it, a dot to widen it. Pinch for width, twist to aim, double-tap to centre. The rim at the bottom is volume."
-                 : "Drag the puck to move the sound, or pull the dot above it out to steer the sound in one direction. The rim at the bottom is volume.")
-                .font(.caption).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
-            if let e = m.error {
-                Text(e).font(.caption).foregroundStyle(Theme.bad).lineLimit(2)
-            }
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            nav?.interactivePopGestureRecognizer?.isEnabled = false
         }
-        .padding(.top, 10)
+        override func viewWillDisappear(_ animated: Bool) {
+            super.viewWillDisappear(animated)
+            nav?.interactivePopGestureRecognizer?.isEnabled = true
+        }
     }
+    func makeUIViewController(context: Context) -> Holder { Holder() }
+    func updateUIViewController(_ c: Holder, context: Context) {}
 }

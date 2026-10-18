@@ -47,3 +47,35 @@ playing). In at −40 dBFS and out at −∞ means the render for this cell is z
 override, room EQ, **bass distribution — off zeroes the primary's own output**, listener-offset compensation) before
 suspecting the DAC; `POST /api/ping {serial}` through `system_out` proves the output path. A listener marker sitting
 on top of a speaker also pulls that speaker down several dB through the offset compensation.
+
+The other way the primary goes quiet is **snap-to-cell**: cellbroker adds every cell the sound is snapped to
+to `BassDistribution.disabledCells` and only ever clears that set when the *cloud* pushes the room document
+back (`ProxyManager.set_cell_state`), which never happens with the cloud blocked. A primary left in that set
+renders zero. Check it with
+
+```sh
+python3 -c "import dbus;b=dbus.SystemBus();p=dbus.Interface(b.get_object('com.syng.AudioSourceServer','/com/syng/AudioSource/BassDistribution'),'org.freedesktop.DBus.Properties');print(p.Get('com.syng.AudioSource.BassDistribution','disabledCells'))"
+```
+
+**A speaker playing ~0.6 s behind** is one DAC buffer (32768 frames) out, and it shows in that cell's jackd
+log as a constant `Playback underrun` storm (50–80 a second, mostly hidden behind journald's "Suppressed N
+messages from jackd"). In step, a cell logs none. `systemctl restart jackd` on that cell cures it. What put
+cells there was a network flap: anything that re-adds an address (here: the agent's own `ip addr replace` on
+usb0/usb1 every 90 s, fixed in b56) makes mDNSResponder re-announce the cell and every peer sees the room
+vanish and reappear (`CELL DISAPPEARED` in celldirector's log). Since b56 the agent watches the storm itself
+(`GET /api/storm`). Compare **all** cells when you measure: two cells late by the same buffer agree with each other.
+
+**Measuring whether a speaker is in step.** Nothing inside the cell reports the room's acoustic alignment, so
+measure it: record the room on two cells at the same NTP second (`jack_capture -d 10 -c 1 -p system:capture_1`
+started by `while [ $(date +%s) -lt $T ]`), take the log-RMS envelope of each in 10 ms frames and
+cross-correlate. Each mic is dominated by its own speaker, so the peak lag is how late one plays against the
+other (±50 ms of start-time slack; a stuck primary showed up as +640 ms, r 0.82). The agent does exactly this
+(`GET /api/synccheck`). A stuck primary is cured by restarting **jackd** — the extra latency lives in its
+32768-frame DAC ring — not syngsoundserver.
+
+**Fixed focus is single-driver.** `cell_set_objects_to_fixed_focus` with any value ≥ 0 makes every cell play
+through one driver only (`system_out_2/3` go to −∞; meter all three ports in the same window, music varies too
+much between sequential reads). `-1.0` clears it.
+
+Since b53/b54 the agent keeps that property honest (`bass_sync()`, a 5 s watchdog) and logs
+`BASS disabledCells [...] -> [...] (this cell was muting itself)` when it corrects it.

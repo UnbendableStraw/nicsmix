@@ -73,6 +73,13 @@ The dashboard's LED card (modes, group colour, beat sensitivity, floor, fades, v
 daemon through `/api/led/*` on every cell (`scope: group`). It is enabled in the image by
 `tools/fw/build-troubadour.sh`; the service args live in `/etc/default/syng-led-reactive`.
 
+Whatever the mode, every colour goes through one PWM writer, which publishes it to
+`/dev/shm/syng-led-rgbw` (`r g b w t`, ~20 Hz). The agent reads that file: `/api/led` reports it as
+`color`, and it rides the viz feed as `led: [r,g,b,w]`, which is how the sound field (the dashboard's
+and the app's) ends up glowing the same colour as the speaker — see `paletteFromColor()` in
+`field/field.js` and `FieldPalette.from()` in the iOS app. A manual colour set through
+`/api/led/color` publishes to the same file.
+
 Taps the JACK playback mix (what the speaker is playing), does a small numpy FFT,
 and drives the 4 PWM channels directly. `ledmanager` is stopped while it runs and
 restarted on exit (so `systemctl stop syng-led-reactive` restores normal behavior).

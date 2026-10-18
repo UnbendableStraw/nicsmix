@@ -38,6 +38,7 @@ const DEFAULTS = {
             room:[0.10,0.26,0.33], roomEdge:[0.07,0.19,0.23], bg:[0,0,0] },
   showVolume: true, showRings: true, classicParticles: true,
   autoPalette: true, palette: 'airplay',   // the field takes the active source's colours, like the app's Auras_* palettes
+  followLed: true,        // ...unless the speakers' LEDs are lit, and then the field glows what the room glows
   palettes: {   // decoded from the app's 16x16x16 colour histograms (_re/auras): deep / mid / light / white / blob A / blob B / room / room edge
     airplay: { cyanDeep:[0.0,0.36,0.54], cyan:[0.14,0.64,0.84], cyanLight:[0.54,0.84,0.95], white:[0.90,0.98,1.0], blue:[0.10,0.42,0.86], teal:[0.08,0.60,0.70], room:[0.10,0.26,0.33], roomEdge:[0.07,0.19,0.23] },
     spotify: { cyanDeep:[0.0,0.30,0.18], cyan:[0.13,0.56,0.33], cyanLight:[0.55,0.86,0.66], white:[0.92,1.0,0.95], blue:[0.08,0.46,0.30], teal:[0.12,0.62,0.40], room:[0.08,0.22,0.15], roomEdge:[0.06,0.16,0.11] },
@@ -54,6 +55,23 @@ const DEFAULTS = {
 function clamp(v,a,b){return v<a?a:v>b?b:v;}
 function wrapPi(a){return ((a+Math.PI)%TAU+TAU)%TAU-Math.PI;}
 function smoothstep(e0,e1,x){const t=clamp((x-e0)/(e1-e0),0,1);return t*t*(3-2*t);}
+
+// ---------- a palette out of one live colour (what the speaker's LEDs are glowing) ----------
+// Hue (and some of the saturation) comes from the LEDs; the value/saturation structure is the app's own,
+// so the field keeps its depth instead of turning into a flat wash of one colour.
+function rgb2hsv(r,g,b){const mx=Math.max(r,g,b),mn=Math.min(r,g,b),d=mx-mn;let h=0;
+  if(d>1e-6){ if(mx===r)h=((g-b)/d+(g<b?6:0))/6; else if(mx===g)h=((b-r)/d+2)/6; else h=((r-g)/d+4)/6; }
+  return [h, mx>1e-6?d/mx:0, mx];}
+function hsv2rgb(h,s,v){h=((h%1)+1)%1;const i=Math.floor(h*6),f=h*6-i,p=v*(1-s),q=v*(1-s*f),t=v*(1-s*(1-f));
+  switch(i%6){case 0:return[v,t,p];case 1:return[q,v,p];case 2:return[p,v,t];case 3:return[p,q,v];case 4:return[t,p,v];default:return[v,p,q];}}
+function paletteFromColor(r,g,b,w){
+  const c=rgb2hsv(r,g,b), h=c[0]; let s=c[1]*(1-0.5*(w||0));
+  if(c[2] < 0.03 || s < 0.12) return null;     // LEDs off, or white light: keep the source's own colours
+  s = clamp(s, 0.45, 1.0);
+  const P=(sm,vv,dh)=>hsv2rgb(h+(dh||0), clamp(s*sm,0,1), vv);
+  return { cyanDeep:P(1.00,0.54), cyan:P(0.83,0.84), cyanLight:P(0.43,0.95), white:P(0.10,1.00),
+           blue:P(0.88,0.86,-0.045), teal:P(0.89,0.70,0.035), room:P(0.70,0.33), roomEdge:P(0.70,0.23) };
+}
 
 // ---------- the capped-torus SDF (exact port of ProtoTools cappedTorus/sampleNormalAndDistance) ----------
 // Field space: puck at origin, rim at radius 0.5, screen y down. S = prepared params.
@@ -463,6 +481,7 @@ function create(wrap, opts){
 
   // ----- audio feed -----
   function pullViz(){ if(!vizFn) return; const v = vizFn(); if(!v) return;
+    st.ledPal = (cfg.followLed && v.led && v.led.length >= 3) ? paletteFromColor(v.led[0], v.led[1], v.led[2], v.led[3]||0) : null;
     st.e += ((v.energy||0) - st.e)*0.35; st.b += ((v.bass||0) - st.b)*0.4;
     const sp = v.spec||[]; for(let i=0;i<24;i++){ const t = sp.length? sp[Math.min(sp.length-1, Math.floor(i*sp.length/24))] : 0; st.rawSpec[i]=t; st.spec[i] += (t - st.spec[i])*0.5; }
     const isNew = (v.seq==null) ? (sp.length>0) : (v.seq!==st.seq);
@@ -497,7 +516,7 @@ function create(wrap, opts){
     r = spring1(st.half, st.halfV, st.halfT, dt); st.half=r[0]; st.halfV=r[1];
     r = spring1(st.weight, st.weightV, st.spatial?cfg.weightSpatial:cfg.weightOmni, dt); st.weight=r[0]; st.weightV=r[1];
     st.volume += (st.volT-st.volume)*Math.min(1,dt*14);
-    { const tp = cfg.palettes[cfg.palette] || cfg.palettes.airplay; const k = Math.min(1, dt*1.6);
+    { const tp = st.ledPal || cfg.palettes[cfg.palette] || cfg.palettes.airplay; const k = Math.min(1, dt*(st.ledPal?2.4:1.6));
       for(const key in tp){ const a = cfg.colors[key], b = tp[key]; if(!a) continue; for(let i=0;i<3;i++) a[i] += (b[i]-a[i])*k; } }
     // particle sim at fixed rate
     prepSDF(S, st.dir, st.spatial?st.half:Math.PI, st.weight, cfg);

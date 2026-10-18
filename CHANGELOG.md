@@ -2,6 +2,76 @@
 
 Agent builds are numbered bNN; the published `agent/syng-agent.py` is the latest.
 
+## b56 — 2026-10-17
+- **The real cause of "a speaker plays half a second behind" — the agent itself.** The keeper ran
+  `ip addr replace` on both USB setup ports of every cell every 90 s. `replace` re-installs an address that is
+  already there, the kernel announces it (RTM_NEWADDR), mDNSResponder answers by withdrawing and re-announcing
+  the whole cell, so every cell saw the whole room DISAPPEAR and APPEAR every 90 s (~150 flaps an hour), and
+  celldirector rebuilt the group's audio links each time. Now and then a cell came back exactly one 32768-frame
+  DAC buffer late (640 ms) and stayed there, jackd logging a constant "Playback underrun" storm (50–80/s; a
+  healthy cell logs none). The primary went from 22:44, .138 from 01:30 — each on the minute of an address
+  event on usb0/usb1 followed by the flap. `usbnet_up()` now only adds what is missing: 0 address events and
+  0 flaps in the minutes after the deploy, where there had been one every 90 s.
+- b55's microphone check was blind to this: it compared the primary with .138 only, both were one buffer
+  late, so they agreed — and each check attached capture clients to the live audio engine. It no longer runs
+  by itself; by hand (`GET /api/synccheck`) it now compares every member with every other.
+- **Self-healing that touches nothing:** each cell reads its own jackd underrun rate from the journal every
+  30 s (`GET /api/storm`); over 10/s on two checks in a row it restarts jackd (at most every 10 min) and logs
+  it. After restarting jackd on .226 and .138: 0 underruns/s on all five Ball Room cells.
+
+## b55 — 2026-10-17
+- **Direct now plays through all three drivers.** It was built on cellbroker's fixed-focus override, and *any*
+  override value (0.0, 0.5, 0.8, 1.0 — metered with all three driver outputs in the same window) switches every
+  cell to a single driver: `system_out_2/3` at exactly −∞, back the moment the override is cleared. So Direct
+  never touches focus now: it is the normal renderer with the field pinned to the classic puck at the centre (no
+  steering), room correction off, listener-offset compensation off, bass distribution on. Measured on the
+  primary: all three drivers live; each cell's own mic hears its speaker within 1.2 dB of the others. The
+  field you set is kept and returns in Syng.
+- **The primary playing ~half a second behind the group**, measured with the cells' own microphones (two
+  cells record the room at the same NTP second; the log-RMS envelopes are cross-correlated): 640 ms late,
+  r = 0.82 — exactly one 32768-frame DAC buffer. Restarting jackd brought it to 0 ms (r = 0.87); restarting
+  syngsoundserver did not. Switching listener-offset compensation or room EQ live did *not* reproduce it
+  (0 / −30 / −40 ms), so the trigger is still unknown — the agent measures instead of guessing:
+  (superseded by b56, which found the cause) `GET /api/synccheck` (the two-mic measurement), `GET /api/synccheck/last`,
+  `POST /api/capture/envelope {at, seconds}`, `POST /api/resync` (restart jackd, wait for the source, re-apply
+  the mode). The check runs by itself 25 s after every sound-mode switch and every 30 min while music plays;
+  an offset over 150 ms with a clear correlation restarts jackd (at most every 10 min) and re-measures.
+  Only an 8 s envelope (100 numbers/s) leaves a cell; the recording is deleted at once. `sync_check: false`
+  in `/api/settings` turns the automatic checks off. After the change: Syng −10 ms, Direct −30 ms, both r ≥ 0.97.
+- Not the cause, for the record: jackd's "Playback underrun" storm on the primary (its idle SourceCast receiver
+  stream; secondaries show none), CPU (the audio chain is pinned to cores 1–3, the agent and the LED daemon to
+  core 0 — stopping both changed nothing), and the CPU governor (left at stock `powersave`).
+
+## b53 / b54 — 2026-10-17
+- **The primary silenced itself again — this time through snap-to-cell, and now it cannot.** Same symptom as b50
+  (no audio from the primary, LEDs still reacting, secondaries fine), different mechanism. cellbroker excludes any
+  cell the sound is *snapped* to from bass distribution (`ProxyManager.source_set_stem_positions` →
+  `snapped_cells.add(...)` → `bass_distribution_proxy.set_disabled_cells(...)`), and that set is **only added to**:
+  the one place it is cleared is `set_cell_state()`, i.e. when Syng's cloud pushes the room document back — which
+  we deliberately block. So once the puck has snapped onto a cell, that cell stays out of bass distribution for
+  good; and with bass distribution off for the *primary*, its own render is exactly zero (the b50 finding). The
+  puck snaps to the nearest speaker ring and the primary sits where the listener marker is, so it is easy to hit.
+  Found on the cell: `airplay2:out0` at −53 dBFS, `syngsoundserver:system_out_*` at −∞, and
+  `disabledCells = ["…0HH3Q", "…GMB9Y"]` with GMB9Y being the primary itself.
+- **b53**: the agent owns `disabledCells`. `bass_sync()` writes the set that matches the live field — the snapped
+  cell, never this cell itself — after every handle push, after a sound-mode change and on each keeper pass, and
+  logs it when it finds the cell muting itself. **b54**: a 5 s watchdog, because the keeper only comes round every
+  90 s and this is the worst failure the firmware has.
+- Verified by reproducing it: snapping the sound onto the primary used to leave it in `disabledCells` for ever;
+  it now stays empty and the primary keeps rendering.
+
+## b52 — 2026-10-17
+- **The sound field glows what the speakers glow.** `syng-led-reactive` publishes its live colour to
+  `/dev/shm/syng-led-rgbw` (~20 Hz, every mode goes through one PWM writer); the agent reads it and puts it on
+  the viz feed as `led: [r,g,b,w]` (`/api/viz/frame` and the SSE stream), and `/api/led` reports it as `color`.
+  A hand-picked colour (`/api/led/color`) publishes to the same place. The field — the dashboard's, and the
+  native one in the iOS app — derives its whole palette from that colour: hue and some of the saturation from
+  the light, the value/saturation structure kept from the app's own palettes so the field keeps its depth
+  instead of flattening into a wash. White light or LEDs off falls back to the source's palette
+  (`cfg.followLed`, toggle on the dashboard: "Colours follow the LEDs").
+- With `--palette free` each speaker evolves its own colour, so the field follows the primary's; set the LED
+  palette to **shared** for one colour across the room.
+
 ## b51 — 2026-10-17
 - **Soundcheck quality.** Three Oct-16 runs had put the same speakers metres apart from run to run, while the layout Syng's cloud held (square + centre) matched the room. Same solver on both sides (pycalibrator's gradient-descent MDS on a ToF matrix, initialised from AoA) — ours ran against music, with a speaker from another room in the measurement, and one bad pair skews the unweighted fit. Now: playback is **paused** on every active source for the measurement and resumed after; the patched `pycalibrator/runner.py` (overlay) keeps each run's raw **ToF/AoA matrices** in `/data/syng-agent/calib-matrices.jsonl`; **Soundcheck ×3** (setup page, `POST /api/calibration/run {runs: 3}`) runs three passes and solves once on the per-pair median ToF / circular-median AoA with the firmware's own solver tried from every reference cell (lowest residual wins), reports residual and the pairs whose spread or reciprocity is off. Synthetic check: 3 cm max pairwise error vs 52 cm for a single run with two late arrivals.
 - Ball Room layout restored to the cloud-calibrated one from the pre-agent backup (`_re/cell/state-backup/138.json`): the five original positions/rotations, circle (2.02, 1.21) r 2.74 m, rotation 2.4°, listener on the centre cell; the previous layout saved beside it.
@@ -15,7 +85,30 @@ Agent builds are numbered bNN; the published `agent/syng-agent.py` is the latest
 - **celldirector restart guard**: restarted while Wi-Fi is already up, stock celldirector never gets a "connected" event and drops into *WiFi repair mode* 20 s later (phase persisted; roles keep working). The agent bounces the Wi-Fi service once when it sees that after a restart it performed. This is what the b39 fresh cell ran into.
 - `whoami` gains `wired_if`, `wired_ip`, `link_mode`, `ptp`; document entries carry `wired_ip`.
 
+## apps — Android catches up — 2026-10-17
+- **The sound field is native on Android too**, in OpenGL ES 3.1 (`apps/android/.../field/`): the same four passes
+  as the Metal renderer, the ProtoTools simulation in a **compute shader** stepped at the app's fixed 30 Hz with
+  the frame interpolating between steps, the particles read back as vertex attributes (ES 3.1 does not promise
+  storage blocks in the vertex stage), and the glass orbs refracted through the app's lens table. Touches go
+  straight to the model on the GL thread; pinch sets the width, two-finger twist aims, double-tap centres.
+  A device without ES 3.1 compute falls back to the cell's WebGL field.
+- **Now Playing and the field are one screen** on Android as well, and **Setup is native**: Room, Layout &
+  Soundcheck, LEDs, Sound & controls, Scenes, Network, Firmware (upload a `.img.gz` from the phone) and System.
+- iOS gained the same Sound & controls and Scenes screens (tone, volume ceiling, control ring; save / apply /
+  schedule a scene, with the phone's time zone sent to the primary so a schedule fires locally) and cloud block.
+
 ## apps — native sound field (iOS) — 2026-10-17
+- **Setup is native too** on iOS: Room (rename, members, make primary, remove, add a nearby speaker), **Layout &
+  Soundcheck** (drag the speakers on a plan, tap one to turn it, fit a circle, hear it, Soundcheck ×1/×3 with the
+  pass counter, residual and per-pair spread/reciprocity), LEDs (reactive modes, palette, colour, room-wide or
+  one speaker), Network (Wi-Fi scan/join/forget, radios, the wired cell-to-cell link with live PTP offsets per
+  member), Firmware (what is flashed, install, roll back, room-wide, upload a `.img.gz` from Files) and System
+  (live fleet, stats, sleep timer, housekeeping). The cell's own page is still one tap away for the rest.
+- Now Playing and the sound field are **one page**: the field fills the screen with a compact player under it.
+- Fixes from the first run on a device: the puck's shadow is a contact shadow again (the app's 4.5-radius one
+  read as a grey donut over this renderer's brighter aura); the volume rim only takes a drag that starts where
+  the volume already sits (a tap elsewhere on the arc used to jump it); and the navigation edge-swipe is off
+  while the field is on screen, so dragging near the left edge no longer pops back to Rooms.
 - **The sound field is native on iOS** (`apps/ios/Troubadour/Sources/Field/`), no WebView: the web renderer ported
   to Metal in four passes — scene (room disc, capped-torus aura per-source palette, flurry blobs, PulseField halo)
   at 0.62 resolution, blit, particles, overlay. The **particle simulation moved into a compute kernel** (same

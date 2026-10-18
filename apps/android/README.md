@@ -22,8 +22,17 @@ Needs platform 34 and build-tools 34 (`sdkmanager "platforms;android-34" "build-
 - `net/Fleet.kt` — discovery: NSD `_syng._tcp` → seeds → `/api/discover` on the first agent that answers; a
   multicast lock so mDNS actually arrives; manual addresses are kept in prefs.
 - `ui/RoomsScreen.kt` — rooms list, theme (`Theme`, `Card`, `Pill`, `Puck`).
-- `ui/RoomScreen.kt` — a room: Now Playing (native), Field (WebView `/#fieldwrap`), Speakers, Setup (WebView
-  `/setup`, file chooser routed through `MainActivity` so firmware uploads work).
+- `ui/RoomScreen.kt` — a room: **Room** (the sound field with a compact player under it), Speakers, Setup.
+- `ui/SetupScreen.kt` — the native setup screens: Room, Layout & Soundcheck, LEDs, Sound & controls, Scenes,
+  Network, Firmware, System — each one an `Ep` (one `GET /api/…`, polled, posts back) plus a layout. The cell's
+  own `/setup` page is the last row, with its file chooser routed through `MainActivity`.
+- `field/` — the sound field in **OpenGL ES 3.1**, the counterpart of the iOS Metal renderer:
+  `FieldShaders.kt` (scene, blit, the ProtoTools simulation as a compute shader, additive points, and the
+  overlay that refracts the glass orbs through the app's lens table), `FieldRenderer.kt` (the four passes, the
+  sim stepped at the app's fixed 30 Hz with frames interpolating), `FieldModel.kt` (state, the app's spring,
+  the SSE audio feed, palettes — including the live LED colour from agent b52) and `FieldView.kt`
+  (`GLSurfaceView` + touch straight to the model, pinch for width, two-finger twist to aim, double-tap to
+  centre). A device without ES 3.1 compute falls back to the cell's WebGL field.
 - `PlayPauseTile.kt` — Quick Settings tile acting on the last room opened.
 - `widget/` — two Glance home-screen widgets (Sound Field: picture + centre / classic–spatial / width / nudge buttons; LEDs: mode
   buttons + off), acting on the last room opened; `res/xml/widget_*.xml` are their provider specs.

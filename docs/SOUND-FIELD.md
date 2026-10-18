@@ -221,3 +221,7 @@ discs under the puck (the dark ring you see around it).
 (env, 1.0 m) around the image pointing along `rot`; spatial off or spread ≥ 300 = the captured
 10-object surround ring translated to the image. `/api/state` → `room.field` now carries
 `rot` and `spatial`. Default distance is 0 (puck rests on the listener, like the app).
+
+The palette does not have to come from the source. When the speakers' LEDs are lit, the agent puts their
+live colour on the viz feed (b52) and the field derives its eight palette colours from it — hue from the
+light, the value/saturation structure unchanged — so the room and the screen glow together.

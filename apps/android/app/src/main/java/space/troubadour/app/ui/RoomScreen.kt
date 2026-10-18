@@ -10,6 +10,7 @@ import android.webkit.WebViewClient
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -20,14 +21,11 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -37,16 +35,23 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import space.troubadour.app.MainActivity
+import space.troubadour.app.field.FieldCanvas
+import space.troubadour.app.field.FieldModel
+import space.troubadour.app.field.supportsCompute
 import space.troubadour.app.net.Agent
 import space.troubadour.app.net.Fleet
 import space.troubadour.app.net.Room
 import space.troubadour.app.net.RoomState
 
+/**
+ * One room, three tabs: **Room** (the sound field drawn natively, with playback under it),
+ * **Speakers**, and **Setup** — native screens, with the cell's own page one tap away.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RoomScreen(room: Room, onBack: () -> Unit) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
-    val tabs = listOf("Now Playing" to Icons.Default.GraphicEq, "Field" to Icons.Default.BlurOn, "Speakers" to Icons.Default.Speaker, "Setup" to Icons.Default.Tune)
+    val tabs = listOf("Room" to Icons.Default.BlurOn, "Speakers" to Icons.Default.Speaker, "Setup" to Icons.Default.Tune)
     Scaffold(containerColor = Theme.bg,
         topBar = { TopAppBar(title = { Text(room.name, fontWeight = FontWeight.Bold) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) } },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Theme.bg, titleContentColor = Color.White)) },
@@ -55,10 +60,9 @@ fun RoomScreen(room: Room, onBack: () -> Unit) {
     ) { pad ->
         Box(Modifier.padding(pad).fillMaxSize()) {
             when (tab) {
-                0 -> NowPlaying(room)
-                1 -> AgentPage(room.agent, "/#fieldwrap")
-                2 -> Speakers(room)
-                else -> AgentPage(room.agent, "/setup")
+                0 -> RoomMain(room)
+                1 -> Speakers(room)
+                else -> SetupScreen(room)
             }
         }
     }
@@ -84,58 +88,110 @@ class RoomModel(val agent: Agent?) {
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+/** The field fills the screen; what is playing lives in a compact strip under it. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun NowPlaying(room: Room) {
+fun RoomMain(room: Room) {
+    val ctx = LocalContext.current
     val m = remember(room.id) { RoomModel(room.agent) }
+    val field = remember(room.id) { FieldModel(room.agent) }
     val scope = rememberCoroutineScope()
-    val haptic = LocalHapticFeedback.current
-    var lastStep by remember { mutableIntStateOf(-1) }
+    var sheet by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(room.id) { while (true) { m.tick(); delay(2000) } }
-    val st = m.state; val act = st.active
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Card("Playback") {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                Box(Modifier.size(72.dp).clip(RoundedCornerShape(12.dp)).background(Theme.surface2), contentAlignment = Alignment.Center) {
-                    if (act?.hasArtwork == true && m.agent != null) AsyncImage(model = "${m.agent.base}/api/artwork?source=${act.id}&k=${Uri.encode(act.title)}", contentDescription = null, modifier = Modifier.fillMaxSize())
+
+    val vol by field.volPct.collectAsState()
+    val spatial by field.spatialOn.collectAsState()
+    val widthDeg by field.widthDeg.collectAsState()
+    val aimDeg by field.aimDeg.collectAsState()
+    val live by field.live.collectAsState()
+    val fieldErr by field.error.collectAsState()
+    val st = m.state
+    val act = st.active
+
+    Column(Modifier.fillMaxSize()) {
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            if (supportsCompute(ctx)) FieldCanvas(field, Modifier.fillMaxSize())
+            else AgentPage(room.agent, "/#fieldwrap")
+        }
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.size(46.dp).clip(RoundedCornerShape(10.dp)).background(Theme.surface2), contentAlignment = Alignment.Center) {
+                    if (act?.hasArtwork == true && m.agent != null)
+                        AsyncImage(model = "${m.agent.base}/api/artwork?source=${act.id}&k=${Uri.encode(act.title)}", contentDescription = null, modifier = Modifier.fillMaxSize())
                     else Icon(Icons.Default.MusicNote, null, tint = Theme.muted)
                 }
                 Column(Modifier.weight(1f)) {
-                    Text(if (act != null && act.title.isNotEmpty()) act.title else (act?.displayName ?: "Nothing playing"), fontWeight = FontWeight.SemiBold, fontSize = 16.sp, maxLines = 2)
-                    Text(listOf(act?.artist, act?.album).filter { !it.isNullOrEmpty() }.joinToString(" · "), color = Theme.muted, fontSize = 13.sp, maxLines = 1)
-                    st.viaPrimary?.let { Text("via $it", color = Theme.muted, fontSize = 11.sp) }
+                    Text(if (act != null && act.title.isNotEmpty()) act.title else (act?.displayName ?: "Nothing playing"),
+                        fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Box(Modifier.size(6.dp).clip(RoundedCornerShape(3.dp)).background(if (live) Theme.live else Theme.muted.copy(alpha = .4f)))
+                        Text(listOf(act?.artist, act?.album).filter { !it.isNullOrEmpty() }.joinToString(" · ").ifEmpty { "drag the puck to move the sound" },
+                            color = Theme.muted, fontSize = 12.sp, maxLines = 1)
+                    }
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("$vol", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                    Text(if (spatial) "$widthDeg° · $aimDeg°" else "all around", color = Theme.muted, fontSize = 11.sp)
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 fun tr(a: String) = scope.launch { act?.let { runCatching { m.agent?.post("/api/transport", mapOf("source" to it.id, "action" to a)) }; m.tick() } }
                 Pill("⏮", modifier = Modifier.weight(1f), enabled = act != null) { tr("previous") }
                 Pill(if (act?.playing == true) "Pause" else "Play", filled = true, modifier = Modifier.weight(1f), enabled = act != null) { tr(if (act?.playing == true) "pause" else "play") }
                 Pill("⏭", modifier = Modifier.weight(1f), enabled = act != null) { tr("next") }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                st.sources.forEach { s -> Pill(s.displayName, filled = s.active, modifier = Modifier.weight(1f)) { scope.launch { runCatching { m.agent?.post("/api/source", mapOf("id" to s.id, "on" to !s.active)) }; m.tick() } } }
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill("Centre") { field.centrePuck() }
+                Pill(if (spatial) "All around" else "Spatial", filled = spatial) { field.setSpatialOn(!spatial) }
+                Pill(if (st.soundMode == "direct") "Direct" else "Syng") { sheet = "mode" }
+                if (m.scenes.isNotEmpty()) Pill("Scenes") { sheet = "scenes" }
+                Pill(if (act?.mute == true) "Muted" else "Mute", filled = act?.mute == true) {
+                    scope.launch { runCatching { m.agent?.post("/api/mute", mapOf("on" to !(act?.mute ?: false))) }; m.tick() }
+                }
+                st.sources.forEach { s ->
+                    Pill(s.displayName, filled = s.active) {
+                        scope.launch { runCatching { m.agent?.post("/api/source", mapOf("id" to s.id, "on" to !s.active)) }; m.tick() }
+                    }
+                }
             }
-            Row { Text("Volume", color = Theme.muted, fontSize = 14.sp); Spacer(Modifier.weight(1f)); Text("${(m.volume * 100).toInt()}", fontWeight = FontWeight.SemiBold) }
-            Slider(value = m.volume.toFloat(), onValueChange = { v ->
-                val step = (v * 20).toInt(); if (step != lastStep) { lastStep = step; haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
-                scope.launch { m.setVolume(v.toDouble(), final = false) }
-            }, onValueChangeFinished = { scope.launch { m.setVolume(m.volume, final = true) } },
-                colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Theme.surface2))
-            Pill(if (act?.mute == true) "Muted" else "Mute", filled = act?.mute == true) { scope.launch { runCatching { m.agent?.post("/api/mute", mapOf("on" to !(act?.mute ?: false))) }; m.tick() } }
+            (fieldErr ?: m.error)?.let { Text(it, color = Theme.bad, fontSize = 11.sp, maxLines = 1) }
         }
-        Card("Sound mode") {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Pill("Syng", filled = st.soundMode == "syng", modifier = Modifier.weight(1f)) { scope.launch { runCatching { m.agent?.post("/api/soundmode", mapOf("mode" to "syng")) }; m.tick() } }
-                Pill("Direct", filled = st.soundMode == "direct", modifier = Modifier.weight(1f)) { scope.launch { runCatching { m.agent?.post("/api/soundmode", mapOf("mode" to "direct")) }; m.tick() } }
+    }
+
+    if (sheet != null) {
+        ModalBottomSheet(onDismissRequest = { sheet = null }, containerColor = Theme.bg) {
+            Column(Modifier.padding(16.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                if (sheet == "mode") {
+                    Card("Sound mode") {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Pill("Syng", filled = st.soundMode == "syng", modifier = Modifier.weight(1f)) {
+                                scope.launch { runCatching { m.agent?.post("/api/soundmode", mapOf("mode" to "syng")) }; m.tick() }
+                            }
+                            Pill("Direct", filled = st.soundMode == "direct", modifier = Modifier.weight(1f)) {
+                                scope.launch { runCatching { m.agent?.post("/api/soundmode", mapOf("mode" to "direct")) }; m.tick() }
+                            }
+                        }
+                        Text("Syng steers the sound across the speakers and their drivers. Direct: every speaker plays the whole mix through all three drivers at the same level.",
+                            color = Theme.muted, fontSize = 12.sp)
+                    }
+                    Card("Volume") {
+                        Slider(value = m.volume.toFloat(), onValueChange = { scope.launch { m.setVolume(it.toDouble(), false) } },
+                            onValueChangeFinished = { scope.launch { m.setVolume(m.volume, true) } },
+                            colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Theme.surface2))
+                        Text("The rim at the bottom of the field does this too — drag from where the volume already sits.",
+                            color = Theme.muted, fontSize = 12.sp)
+                    }
+                } else {
+                    Card("Scenes") {
+                        m.scenes.forEach { n ->
+                            Pill(n, filled = m.lastScene == n, modifier = Modifier.fillMaxWidth()) {
+                                scope.launch { runCatching { m.agent?.post("/api/scenes/apply", mapOf("name" to n)) }; m.tick(); sheet = null }
+                            }
+                        }
+                    }
+                }
             }
-            Text("Syng steers the sound across the speakers and their drivers. Direct: every speaker plays the whole mix through all three drivers at the same level.", color = Theme.muted, fontSize = 12.sp)
         }
-        if (m.scenes.isNotEmpty()) Card("Scenes") {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                m.scenes.forEach { n -> Pill(n, filled = m.lastScene == n) { scope.launch { runCatching { m.agent?.post("/api/scenes/apply", mapOf("name" to n)) }; m.tick() } } }
-            }
-        }
-        m.error?.let { Text(it, color = Theme.bad, fontSize = 12.sp) }
     }
 }
 
@@ -174,7 +230,7 @@ fun Speakers(room: Room) {
     }
 }
 
-/** The agent's own pages (sound field, setup). Its file picker (firmware upload) is routed through the activity. */
+/** The agent's own page, kept as the escape hatch behind Setup. */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun AgentPage(agent: Agent?, path: String) {

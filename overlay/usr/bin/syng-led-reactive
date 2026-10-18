@@ -30,6 +30,7 @@ import numpy as np
 
 CHIP = {"W": 0, "G": 1, "R": 2, "B": 3}
 PWMBASE = "/sys/class/pwm/pwmchip{}"
+LED_PUB = "/dev/shm/syng-led-rgbw"   # what this speaker is glowing, for the agent (and so the sound field can match)
 
 class Pwm:
     def __init__(self, period):
@@ -44,12 +45,14 @@ class Pwm:
             except OSError as e:
                 sys.stderr.write("pwm chip%d init: %s\n" % (c, e))
         self._duty = {c: -1 for c in CHIP.values()}
+        self._pub_t = 0.0
 
     def _w(self, path, val):
         with open(path, "w") as f:
             f.write(val)
 
     def set_rgbw(self, r, g, b, w):
+        self._publish(r, g, b, w)
         for color, v in (("R", r), ("G", g), ("B", b), ("W", w)):
             c = CHIP[color]
             v = 0.0 if v < 0 else (1.0 if v > 1 else v)
@@ -60,6 +63,21 @@ class Pwm:
                     self._duty[c] = duty
                 except OSError:
                     pass
+
+    def _publish(self, r, g, b, w):
+        """Current colour -> /dev/shm, ~20 Hz. The agent puts it on the viz feed so the phone's and the
+        browser's sound field can glow the same colour as the speaker does."""
+        now = time.time()
+        if now - self._pub_t < 0.05:
+            return
+        self._pub_t = now
+        cl = lambda v: 0.0 if v < 0 else (1.0 if v > 1 else float(v))
+        try:
+            with open(LED_PUB + ".tmp", "w") as f:
+                f.write("%.4f %.4f %.4f %.4f %.3f\n" % (cl(r), cl(g), cl(b), cl(w), now))
+            os.replace(LED_PUB + ".tmp", LED_PUB)
+        except OSError:
+            pass
 
     def off(self):
         self.set_rgbw(0, 0, 0, 0)

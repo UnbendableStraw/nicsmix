@@ -396,9 +396,11 @@ fragment float4 overlayFragment(FSOut in [[stage_in]],
     float R = max(O.geom.x, 1.0);
     float scale = max(R / 138.6, 0.5);         // px per point at the reference layout (R = 0.385 W)
 
-    // --- glass orbs: shadow, the handles (or the lift dot in classic mode), then the puck ---
-    float dsh = length(px - O.puck.xy) / max(O.geom.y * 1.32 * 3.4, 1.0);
-    col = mix(col, float3(0.02, 0.08, 0.14), 0.75 * smoothstep(1.0, 0.55, dsh));
+    // --- glass orbs: a contact shadow, the handles (or the lift dot in classic mode), then the puck ---
+    // (the app's own shadow orb reaches 4.5 puck radii at 0.75 — over this renderer's brighter aura
+    //  that reads as a grey donut, so it is kept tight to the glass)
+    float dsh = length(px - O.puck.xy) / max(O.geom.y * 2.0, 1.0);
+    col = mix(col, float3(0.02, 0.08, 0.14), 0.40 * smoothstep(1.0, 0.30, dsh));
 
     float omni = O.puck.w;
     if (omni < 0.999) {

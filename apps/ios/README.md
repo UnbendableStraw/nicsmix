@@ -5,9 +5,9 @@ tab, the agent's own pages where they are already the right thing:
 
 | native | embedded (the agent's pages) |
 |---|---|
-| **Bonjour discovery** — `_syng._tcp` is what celldirector advertises; the first agent found enumerates the LAN (`/api/discover`). No IP typing; the USB setup link `10.86.0.1` is tried too | **Setup** — rooms, Wi-Fi, room layout gestures, Soundcheck, firmware updates (the file picker opens Files, so a `.img.gz` can be installed from the phone) |
-| **Sound field** — Metal, `Sources/Field/` (see below) | |
-| **Now Playing** — artwork, transport, sources, volume slider with haptics, mute, Sound mode, Scenes | |
+| **Bonjour discovery** — `_syng._tcp` is what celldirector advertises; the first agent found enumerates the LAN (`/api/discover`). No IP typing; the USB setup link `10.86.0.1` is tried too | **The speaker's own page** — one tap from Setup, for anything the native screens do not surface (tone controls, scenes scheduling, cloud block, the raw room document) |
+| **Room** — the sound field (Metal, `Sources/Field/`, see below) with what is playing under it: artwork, transport, sources, mute, sound mode, scenes | |
+| **Setup** — Room (name, members, primary), Layout & Soundcheck, LEDs, Network (Wi-Fi, radios, the wired cell-to-cell link with live PTP), Firmware (install, roll back, upload a `.img.gz` from Files), System (live fleet, stats, sleep, housekeeping) | |
 | **Speakers** — pucks, roles, Ping, long-press to name | |
 | **Shortcuts / Siri** — room volume, play a scene, play/pause | |
 | **Widgets** — sound field and LED controls on the home screen | |
@@ -24,13 +24,23 @@ tab, the agent's own pages where they are already the right thing:
   **overlay**, which refracts the scene through the app's own 64-entry lens table to draw the glass puck, notch,
   handles and lift dot, then the speaker rings and the volume rim.
 - `FieldModel.swift` — state and the app's spring (stiffness 218.566, damping 29.568), the SSE audio feed
-  (`/api/viz/stream`), snap-to-speaker, and throttled `/api/soundfield` + `/api/volume` posts.
+  (`/api/viz/stream`), snap-to-speaker, and throttled `/api/soundfield` + `/api/volume` posts. The palette
+  follows the **speakers' LEDs** when they are lit (the agent puts their live colour on the viz feed, b52);
+  the source's own palette is the fallback.
 - `FieldRenderer.swift` — the passes, with the simulation stepped at the app's fixed 30 Hz and frames
   interpolating between steps, so motion is smooth at 120 Hz without changing the physics.
 - `FieldView.swift` — the Metal view plus touch handling (UIKit touches, not SwiftUI gestures, so a drag tracks
   the finger with no recognizer delay): drag the puck, pull the dot above it out to go spatial, drag the notch to
   aim, a dot to widen, **pinch** for width, **two-finger twist** to aim, **double-tap** to centre, and the rim at
   the bottom for volume — with a haptic tick when the puck snaps onto a speaker and when spatial engages.
+
+## Setup, natively
+
+`Sources/Views/SetupView.swift` is a short list that pushes a screen per area; each one is an
+`Endpoint` (one `GET /api/…`, refreshed on a timer, posts back) plus a layout, so the agent's JSON is
+read straight out rather than modelled twice. `Sources/Views/LayoutView.swift` is the room plan:
+drag a speaker to move it, tap it to turn it, fit a circle, hear it, then **Soundcheck ×3**, with the
+pass counter, the residual and the per-pair spread / reciprocity the b51 solver reports.
 
 ## Widgets
 

@@ -212,10 +212,33 @@ def viz_web_loop():
         except Exception:
             time.sleep(0.05)
 
+LED_PUB = "/dev/shm/syng-led-rgbw"   # written by syng-led-reactive (and by a manual colour, below)
+
+def led_live_color(max_age=1.5):
+    """What this speaker is glowing right now, [r,g,b,w] 0..1, or None when nothing is driving the LEDs."""
+    try:
+        with open(LED_PUB) as f: p = f.read().split()
+        if len(p) >= 5 and 0 <= time.time() - float(p[4]) < max_age:
+            return [float(p[0]), float(p[1]), float(p[2]), float(p[3])]
+    except Exception: pass
+    return None
+
+def led_publish(r, g, b, w):
+    try:
+        with open(LED_PUB + ".tmp", "w") as f:
+            f.write("%.4f %.4f %.4f %.4f %.3f\n" % (r, g, b, w, time.time()))
+        os.replace(LED_PUB + ".tmp", LED_PUB)
+    except OSError: pass
+
 def viz_frame():
+    led = led_live_color()
     if time.time() - LAST_VIZ.get("t", 0) < 0.6:
-        d = dict(LAST_VIZ); d["live"] = True; return d
-    return {"energy": 0.0, "bass": 0.0, "beat": 0.0, "spec": [], "flux": [], "src": None, "live": False, "seq": VIZ_SEQ[0]}
+        d = dict(LAST_VIZ); d["live"] = True
+        if led: d["led"] = led
+        return d
+    out = {"energy": 0.0, "bass": 0.0, "beat": 0.0, "spec": [], "flux": [], "src": None, "live": False, "seq": VIZ_SEQ[0]}
+    if led: out["led"] = led
+    return out
 
 def py(v):
     if isinstance(v, dbus.ByteArray): return bytes(v).decode("latin1", "replace")
@@ -386,21 +409,229 @@ def room_eq(on):
     return call("com.syng.OutputGraph", "/com/syng/OutputGraph", "com.syng.OutputGraph",
                 "enableRoomEQs" if on else "disableRoomEQs") is not None or True
 
+BASS_OBJ = "/com/syng/AudioSource/BassDistribution"
+BASS_IF = "com.syng.AudioSource.BassDistribution"
+BASS_LAST = {"want": None, "logged": False}
+
+def bass_disabled_get():
+    try:
+        v = get_all(ASRV, BASS_OBJ, BASS_IF).get("disabledCells")
+        return sorted(json.loads(v) if isinstance(v, str) and v.strip() else (v or []))
+    except Exception:
+        return None
+
+def bass_sync(reason=""):
+    """Keep cellbroker's 'cells excluded from bass distribution' honest.
+
+    cellbroker adds a cell to that set whenever the sound is snapped onto it and never takes it out
+    again — it waits for Syng's cloud to push the room document back, which never happens here. A
+    cell left in the set stays thin; the *primary* left in the set renders nothing at all (b50). So
+    the agent writes the set itself: whatever the field is snapped to right now, minus this cell."""
+    me = (whoami().get("serial") or "")
+    snap = "" if SETTINGS.get("sound_mode") == "direct" else (FIELD.get("snap") or "").strip()
+    want = sorted([snap]) if snap and snap != me else []
+    cur = bass_disabled_get()
+    if cur is None or cur == want:
+        BASS_LAST["want"] = want
+        return None
+    freeing_self = me and me in cur
+    try:
+        set_prop(ASRV, BASS_OBJ, BASS_IF, "disabledCells", dbus.String(json.dumps(want), variant_level=1))
+        BASS_LAST["want"] = want
+        log("BASS disabledCells %s -> %s%s%s" % (cur, want, " (this cell was muting itself)" if freeing_self else "",
+                                                 (" [" + reason + "]") if reason else ""))
+        return {"was": cur, "now": want, "freed_self": bool(freeing_self)}
+    except Exception as e:
+        log("BASS disabledCells write failed: %s" % e)
+        return None
+
+# ---------- sync check: is the primary playing in step with the room? measured with the cells' own mics ----------
+SYNC = {"last": None, "busy": False, "fixed_at": 0.0, "next": 0.0, "history": []}
+
+def _wav_envelope(path, hop_s=0.01):
+    """log-RMS envelope of a WAV (int16 or float32), 10 ms frames, zero mean / unit variance."""
+    import numpy as np
+    raw = open(path, "rb").read(); i = 12; fmt = data = None
+    while i + 8 <= len(raw):
+        cid = raw[i:i + 4]; sz = struct.unpack_from("<I", raw, i + 4)[0]; body = raw[i + 8:i + 8 + sz]
+        if cid == b"fmt ": fmt = struct.unpack_from("<HHIIHH", body, 0)
+        elif cid == b"data": data = body
+        i += 8 + sz + (sz & 1)
+    if not fmt or data is None: raise RuntimeError("unreadable capture")
+    tag, ch, sr = fmt[0], fmt[1], fmt[2]
+    x = np.frombuffer(data, dtype=np.float32 if tag == 3 else np.int16).astype(np.float32)
+    if ch > 1: x = x.reshape(-1, ch)[:, 0]
+    hop = int(sr * hop_s); n = len(x) // hop
+    if n < 50: raise RuntimeError("capture too short")
+    e = np.sqrt((x[:n * hop].reshape(n, hop) ** 2).mean(axis=1) + 1e-12)
+    level = float(20 * np.log10(np.sqrt((x ** 2).mean()) + 1e-12))
+    e = np.log(e + 1e-9); e -= e.mean(); e /= (e.std() + 1e-9)
+    return e, level
+
+def capture_envelope(at=None, seconds=8):
+    """Wait for epoch `at`, record this cell's mic for `seconds`, return only the envelope (and the level)."""
+    seconds = max(3.0, min(15.0, float(seconds)))
+    if at is not None:
+        dt = float(at) - time.time()
+        if dt > 12: raise RuntimeError("start time too far ahead")
+        if dt > 0: time.sleep(dt)
+    path = "/tmp/syng-synccheck.wav"
+    try:
+        subprocess.run(["jack_capture", "-d", "%g" % seconds, "-c", "1", "-p", "system:capture_1", path],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=seconds + 12)
+        e, level = _wav_envelope(path)
+    finally:
+        try: os.remove(path)
+        except OSError: pass
+    return {"env": [round(float(v), 3) for v in e], "hop_ms": 10, "level_dbfs": round(level, 1), "at": at}
+
+def audio_resync(reason=""):
+    """Restart jackd (the DAC ring is where a stuck primary keeps its extra buffer), wait for the source to come
+    back, put the sound mode and the field back."""
+    log("SYNC resync: restarting jackd%s" % ((" [" + reason + "]") if reason else ""))
+    subprocess.run(["systemctl", "restart", "jackd"], timeout=30)
+    for _ in range(30):
+        time.sleep(1)
+        try:
+            if sysctl("is-active", "syngsoundserver") == "active" and active_music_src(): break
+        except Exception: pass
+    time.sleep(2)
+    MODE_APPLIED[0] = None
+    try: apply_sound_mode(None, local_only=True)
+    except Exception as e: log("SYNC resync: soundmode %s" % e)
+    try: push_handles(); bass_sync("resync")
+    except Exception as e: log("SYNC resync: handles %s" % e)
+    return {"ok": True}
+
+def sync_check(autofix=False, reason="manual"):
+    """The two-mic measurement: this cell (the primary) and one secondary capture the room at the same NTP
+    second; the envelopes are cross-correlated; a positive lag means the primary is late."""
+    if SYNC["busy"]: return {"busy": True, "last": SYNC["last"]}
+    st = get_state()
+    if not is_primary_cell(st): return {"error": "run the sync check on the primary"}
+    me_ip = whoami().get("ip")
+    peers = [ip for ip in room_member_ips(st) if ip and ip != me_ip]
+    if not peers: return {"error": "no other speaker in this room"}
+    if not active_music_src(): return {"error": "nothing is playing — the check listens to the music"}
+    SYNC["busy"] = True
+    try:
+        import numpy as np
+        at = time.time() + 3.0
+        got = {}
+        def remote(ip):
+            try: got[ip] = agent_post(ip, "/api/capture/envelope", {"at": at, "seconds": 8}, timeout=30)
+            except Exception as e: got[ip] = {"error": str(e)[:120]}
+        ts = [threading.Thread(target=remote, args=(ip,), daemon=True) for ip in peers]
+        for t in ts: t.start()
+        mine = capture_envelope(at, 8)
+        for t in ts: t.join(35)
+        envs = {me_ip: np.array(mine["env"])}
+        for ip in peers:
+            if got.get(ip, {}).get("env"): envs[ip] = np.array(got[ip]["env"])
+        if len(envs) < 2: raise RuntimeError("no capture from any other speaker")
+        def lag(a, b):
+            m = min(len(a), len(b)); a, b = a[:m], b[:m]
+            c = np.correlate(a, b, mode="full") / m
+            lags = (np.arange(len(c)) - (m - 1)) * 10.0
+            k = int(np.argmax(np.where(np.abs(lags) <= 1500, c, -9.0)))
+            return float(lags[k]), float(c[k])
+        # every cell against every other; each one's offset is its median lag against the rest, so a pair
+        # that is late together no longer looks "in step"
+        ips = list(envs)
+        per = {}
+        for a in ips:
+            ls = [lag(envs[a], envs[b]) for b in ips if b != a]
+            good = sorted(l for l, r in ls if r >= 0.5)
+            per[a] = {"lag_ms": good[len(good) // 2] if good else None, "pairs": len(ls), "clear": len(good)}
+        late = [ip for ip, v in per.items() if v["lag_ms"] is not None and v["lag_ms"] >= 150]
+        res = {"cells": per, "late": late, "t": time.time(), "reason": reason,
+               "lag_ms": per[me_ip]["lag_ms"], "r": 1.0 if per[me_ip]["clear"] else 0.0,
+               "verdict": ("late: " + ", ".join(late)) if late else "in step"}
+        log("SYNC %s: %s %s" % (reason, res["verdict"], {ip: v["lag_ms"] for ip, v in per.items()}))
+        SYNC["last"] = res
+        SYNC["history"] = (SYNC["history"] + [res])[-20:]
+    except Exception as e:
+        SYNC["busy"] = False
+        log("SYNC %s failed: %s" % (reason, e))
+        return {"error": str(e)[:160]}
+    SYNC["busy"] = False
+    if autofix and False:
+        SYNC["fixed_at"] = time.time()
+        audio_resync("measured %+.0f ms" % res["lag_ms"])
+        time.sleep(8)
+        after = sync_check(autofix=False, reason="after resync")
+        res = dict(res, fixed=True, after=after)
+        SYNC["last"] = res
+    return res
+
+def sync_watch_tick():
+    """Retired in b56: the mic check runs only by hand now."""
+    return
+    if not SETTINGS.get("sync_check", True) or SYNC["busy"]: return
+    if time.time() < SYNC["next"]: return
+    try:
+        if not is_primary_cell(get_state()) or not active_music_src(): return
+    except Exception: return
+    SYNC["next"] = time.time() + 1800
+    threading.Thread(target=lambda: sync_check(autofix=True, reason="periodic"), daemon=True).start()
+
+STORM = {"strikes": 0, "fixed_at": 0.0, "last_rate": 0.0, "history": []}
+
+def jackd_underrun_rate(window=30):
+    """Underruns per second jackd logged in the last `window` s, counting the ones journald rate-limited."""
+    out = _sh("journalctl -u jackd --since -%ds --no-pager -q" % window, 10)
+    n = out.count("Playback underrun")
+    supp = _sh("journalctl --since -%ds --no-pager -q -t systemd-journald" % window, 10)
+    for m in re.finditer(r"Suppressed (\d+) messages from jackd", supp):
+        n += int(m.group(1))
+    return n / float(window)
+
+def storm_watch_loop():
+    """A healthy cell logs no playback underruns. A cell knocked one DAC buffer late logs 50-80 a second for as
+    long as it stays late. Two checks in a row over 10/s: restart jackd (at most every 10 minutes)."""
+    time.sleep(60)
+    while True:
+        try:
+            rate = jackd_underrun_rate(30)
+            STORM["last_rate"] = rate
+            STORM["strikes"] = STORM["strikes"] + 1 if rate > 10 else 0
+            if STORM["strikes"] >= 2 and time.time() - STORM["fixed_at"] > 600:
+                STORM["fixed_at"] = time.time(); STORM["strikes"] = 0
+                log("STORM %.0f underruns/s for a minute: this cell is out of step, restarting jackd" % rate)
+                STORM["history"] = (STORM["history"] + [{"t": time.time(), "rate": round(rate, 1)}])[-20:]
+                audio_resync("underrun storm %.0f/s" % rate)
+        except Exception as e:
+            log("STORM watch: %s" % e)
+        time.sleep(30)
+
+def bass_watch_loop():
+    """A silent primary is the worst failure this firmware has, and it is one property away. Watch it."""
+    time.sleep(25)
+    while True:
+        try: bass_sync("watch")
+        except Exception: pass
+        time.sleep(5)
+
 # ---------- sound mode: Syng's steering vs. Direct (all drivers, all cells, same level) ----------
+MODE_APPLIED = [None]
+
 def apply_sound_mode(mode=None, local_only=False):
-    """'syng'  = the stock spatialiser: objects steered across cells and across each cell's three drivers,
-                 room correction, bass distribution.
-       'direct' = focus 0.0 on every object (cellbroker's fixed-focus override: 'all cells playing towards
-                 outside' — every cell plays every object, omni), room correction off, listener-offset compensation
-                 off. Bass distribution stays on: off, the primary's own output is zero.
-       The focus override lives in the primary's cellbroker (in memory, re-applied on every handle push); the
-       EQ / bass flags are per cell, so members apply them locally."""
+    """'syng'  = the stock spatialiser: the field steers the objects across cells and drivers, room correction,
+                 listener-offset compensation, bass distribution.
+       'direct' = the same renderer with nothing steering it: the field pinned to the classic puck at the centre,
+                 room correction off, listener-offset compensation off, bass distribution on. Every cell plays the
+                 whole mix through all three drivers at the same level.
+       Neither mode uses cellbroker's fixed-focus override any more (b55): with *any* override value every cell
+       drops to a single driver. The EQ / compensation / bass flags are per cell, so members apply them locally."""
     mode = mode or SETTINGS.get("sound_mode") or "syng"
     direct = (mode == "direct")
     out = {"mode": mode}
-    if CELL is not None and (whoami().get("role") or "").lower() != "secondary":
+    primary = (whoami().get("role") or "").lower() != "secondary"
+    changed = MODE_APPLIED[0] != mode
+    MODE_APPLIED[0] = mode
+    if CELL is not None and primary:
         try:
-            CELL.call("cell_set_objects_to_fixed_focus", {"focus": 0.0 if direct else -1.0}); out["focus"] = 0.0 if direct else None
+            CELL.call("cell_set_objects_to_fixed_focus", {"focus": -1.0}); out["focus"] = None   # never override
         except Exception as e:
             out["focus_error"] = str(e)[:120]   # no active source yet: the keeper retries
     try: room_eq(not direct); out["room_eq"] = not direct
@@ -414,6 +645,14 @@ def apply_sound_mode(mode=None, local_only=False):
     try:
         set_prop(ASRV, LO_OBJ, LO_IF, "enable", dbus.Boolean(not direct, variant_level=1)); out["listener_compensation"] = not direct
     except Exception as e: out["listener_comp_error"] = str(e)[:80]
+    try: out["bass_disabled"] = bass_sync("soundmode")
+    except Exception as e: out["bass_sync_error"] = str(e)[:80]
+    if primary and changed:
+        FIELD["version"] = str(uuid.uuid4()).upper()   # a new handle version, so cellbroker re-renders either way
+        try: out["handles_pushed"] = push_handles()
+        except Exception as e: out["push_error"] = str(e)[:80]
+        if SETTINGS.get("sync_check_mic", False):   # off by default since b56 (see the docstring)
+            threading.Timer(25, lambda: sync_check(autofix=False, reason="soundmode")).start()
     if not local_only: fanout("/api/soundmode", {"mode": mode})
     return out
 
@@ -549,9 +788,16 @@ def set_soundfield(ux=None, uy=None, rot=None, width=None, radius=None, spatial=
     FIELD["version"] = str(uuid.uuid4()).upper()
     try: FIELD_DIRTY[0] = True
     except Exception: pass
-    return push_handles()
+    n = push_handles()
+    try: bass_sync("field")
+    except Exception as e: log("BASS field: %s" % e)
+    return n
 
 def field_handles():
+    if SETTINGS.get("sound_mode") == "direct":
+        # Direct: nothing steers — the classic puck at the centre of the room, whatever the field says (kept for Syng)
+        return {"0": {"type": "panner_v2", "x": 0.0, "y": 0.0, "rotation": 90.0, "radius": 0.0, "surround_width": 95.0,
+                      "snap_to_cell": "", "snapped_rotation": 0.0, "version": FIELD["version"] + "-direct"}}
     return {"0": {"type": "panner_v2", "x": round(FIELD["ux"], 4), "y": round(FIELD["uy"], 4),
                   "rotation": round(FIELD["rot"], 3), "radius": round(FIELD["radius"] if FIELD["spatial"] else 0.0, 3),
                   "surround_width": round(FIELD["width"], 3), "snap_to_cell": FIELD.get("snap") or "",
@@ -808,7 +1054,7 @@ def led_status():
                         "silentFade": av("--silent-fade"), "beatFade": av("--beat-fade")}
     except Exception: pass
     return {"reactive": reactive, "mode": mode, "palette": palette, "source": source, "tune": tune,
-            "ledmanager": bus_has(LED_SVC), "visions": visions(), "reactiveModes": REACTIVE_MODES}
+            "color": led_live_color(3.0), "ledmanager": bus_has(LED_SVC), "visions": visions(), "reactiveModes": REACTIVE_MODES}
 
 def set_led_flags(pairs):
     """Add/replace each `flag value` in /etc/default/syng-led-reactive ARGS, restart once."""
@@ -851,8 +1097,10 @@ def ensure_manual():
 
 def led_color(r, g, b, w):
     ensure_manual()
-    arr = dbus.Array([dbus.Double(max(0.0, min(1.0, float(x)))) for x in (r, g, b, w)], signature="d")
+    v = [max(0.0, min(1.0, float(x))) for x in (r, g, b, w)]
+    arr = dbus.Array([dbus.Double(x) for x in v], signature="d")
     led_dbus("SetColor", dbus.Int32(5), arr)
+    led_publish(*v)   # a hand-picked colour drives the sound field too
 
 def led_anim(action, name=None):
     ensure_manual()
@@ -897,7 +1145,7 @@ def vision_write(name, content):
 # ====================================================================================
 import socket, struct, random, ipaddress, math, re, threading, subprocess, urllib.request
 
-AGENT_BUILD = "b51"
+AGENT_BUILD = "b56"
 SSH_PUB = "/data/home/root/.ssh/id_ed25519.pub"
 HOST_PUB = "/data/ssh/ssh_host_ed25519_key.pub"
 CLOUD_STATE_FILE = "/data/syng/cloud_state.json"
@@ -2250,7 +2498,15 @@ def usbnet_up():
     out = {}
     for ifn, ip in USB_NETS.items():
         if not os.path.exists("/sys/class/net/%s" % ifn): continue
-        _sh("ip link set %s up" % ifn); _sh("ip addr replace %s/24 dev %s" % (ip, ifn))
+        # Only touch what is missing: `ip addr replace` on an address that is already there still emits
+        # RTM_NEWADDR, and mDNSResponder answers every one by withdrawing and re-announcing the whole cell —
+        # the whole room flapped every 90 s, and a flap now and then left a cell one DAC buffer late (b56).
+        flags = _read("/sys/class/net/%s/flags" % ifn).strip()
+        try: up = bool(int(flags, 16) & 0x1)
+        except ValueError: up = False
+        if not up: _sh("ip link set %s up" % ifn)
+        if ("inet %s/" % ip) not in _sh("ip -4 addr show dev %s" % ifn, 5):
+            _sh("ip addr add %s/24 dev %s" % (ip, ifn))
         net = ip.rsplit(".", 1)[0]
         conf = "/tmp/udhcpd-%s.conf" % ifn
         try:
@@ -2366,6 +2622,10 @@ def keeper_loop():
             if SETTINGS.get("sound_mode") == "direct":
                 try: apply_sound_mode("direct", local_only=True)
                 except Exception as e: log("soundmode keeper: %s" % e)
+            try: bass_sync("keeper")
+            except Exception as e: log("BASS keeper: %s" % e)
+            try: sync_watch_tick()
+            except Exception as e: log("SYNC keeper: %s" % e)
             if SETTINGS.get("link_mode") == "wired" and not LINK["busy"]:
                 try:
                     ifn, ip = wired_addr()
@@ -2751,6 +3011,10 @@ def op_ping(serial=None, vol=None, everyone=False):
     return dict(agent_post(ip, "/api/ping", {"vol": vol}, timeout=8), relayed=ip)
 
 def lc_get(path):
+    if path.startswith("/api/synccheck/last"): return {"last": SYNC["last"], "history": SYNC["history"], "busy": SYNC["busy"]}
+    if path.startswith("/api/storm"): return {"underruns_per_s": round(STORM["last_rate"], 1), "strikes": STORM["strikes"],
+                                              "restarts": STORM["history"], "fixed_at": STORM["fixed_at"]}
+    if path.startswith("/api/synccheck"): return sync_check(autofix=False, reason="manual")
     if path.startswith("/api/link"): return link_status()
     if path.startswith("/api/net"): return net_info()
     if path.startswith("/api/firmware"): return fw_status()
@@ -2783,6 +3047,9 @@ def lc_post(path, body):
         if not re.match(r"^\d+\.\d+\.\d+\.\d+$", ip or "") or not sub.startswith("/api/"): raise RuntimeError("bad relay target")
         if body.get("method", "GET").upper() == "POST": return agent_post(ip, sub, body.get("body") or {}, timeout=40)
         return agent_get(ip, sub, timeout=20)
+    if path.startswith("/api/capture/envelope"): return capture_envelope(body.get("at"), body.get("seconds", 8))
+    if path.startswith("/api/resync"): return audio_resync("manual")
+    if path.startswith("/api/synccheck"): return sync_check(autofix=bool(body.get("fix", False)), reason="manual")
     if path.startswith("/api/room/apply"): return {"ok": apply_view(body)}
     if path.startswith("/api/room/admit"): return op_admit(body["cell"])
     if path.startswith("/api/room/join"): return op_join(body["ip"])
@@ -2849,6 +3116,8 @@ def lc_start():
     try: log("usbnet %s" % usbnet_up())
     except Exception as e: log("usbnet: %s" % e)
     threading.Thread(target=keeper_loop, daemon=True).start()
+    threading.Thread(target=bass_watch_loop, daemon=True).start()
+    threading.Thread(target=storm_watch_loop, daemon=True).start()
 
 
 PAGE = r"""<!doctype html><html lang=en><head><meta charset=utf-8>
@@ -3164,6 +3433,7 @@ const DEFAULTS = {
             room:[0.10,0.26,0.33], roomEdge:[0.07,0.19,0.23], bg:[0,0,0] },
   showVolume: true, showRings: true, classicParticles: true,
   autoPalette: true, palette: 'airplay',   // the field takes the active source's colours, like the app's Auras_* palettes
+  followLed: true,        // ...unless the speakers' LEDs are lit, and then the field glows what the room glows
   palettes: {   // decoded from the app's 16x16x16 colour histograms (_re/auras): deep / mid / light / white / blob A / blob B / room / room edge
     airplay: { cyanDeep:[0.0,0.36,0.54], cyan:[0.14,0.64,0.84], cyanLight:[0.54,0.84,0.95], white:[0.90,0.98,1.0], blue:[0.10,0.42,0.86], teal:[0.08,0.60,0.70], room:[0.10,0.26,0.33], roomEdge:[0.07,0.19,0.23] },
     spotify: { cyanDeep:[0.0,0.30,0.18], cyan:[0.13,0.56,0.33], cyanLight:[0.55,0.86,0.66], white:[0.92,1.0,0.95], blue:[0.08,0.46,0.30], teal:[0.12,0.62,0.40], room:[0.08,0.22,0.15], roomEdge:[0.06,0.16,0.11] },
@@ -3180,6 +3450,23 @@ const DEFAULTS = {
 function clamp(v,a,b){return v<a?a:v>b?b:v;}
 function wrapPi(a){return ((a+Math.PI)%TAU+TAU)%TAU-Math.PI;}
 function smoothstep(e0,e1,x){const t=clamp((x-e0)/(e1-e0),0,1);return t*t*(3-2*t);}
+
+// ---------- a palette out of one live colour (what the speaker's LEDs are glowing) ----------
+// Hue (and some of the saturation) comes from the LEDs; the value/saturation structure is the app's own,
+// so the field keeps its depth instead of turning into a flat wash of one colour.
+function rgb2hsv(r,g,b){const mx=Math.max(r,g,b),mn=Math.min(r,g,b),d=mx-mn;let h=0;
+  if(d>1e-6){ if(mx===r)h=((g-b)/d+(g<b?6:0))/6; else if(mx===g)h=((b-r)/d+2)/6; else h=((r-g)/d+4)/6; }
+  return [h, mx>1e-6?d/mx:0, mx];}
+function hsv2rgb(h,s,v){h=((h%1)+1)%1;const i=Math.floor(h*6),f=h*6-i,p=v*(1-s),q=v*(1-s*f),t=v*(1-s*(1-f));
+  switch(i%6){case 0:return[v,t,p];case 1:return[q,v,p];case 2:return[p,v,t];case 3:return[p,q,v];case 4:return[t,p,v];default:return[v,p,q];}}
+function paletteFromColor(r,g,b,w){
+  const c=rgb2hsv(r,g,b), h=c[0]; let s=c[1]*(1-0.5*(w||0));
+  if(c[2] < 0.03 || s < 0.12) return null;     // LEDs off, or white light: keep the source's own colours
+  s = clamp(s, 0.45, 1.0);
+  const P=(sm,vv,dh)=>hsv2rgb(h+(dh||0), clamp(s*sm,0,1), vv);
+  return { cyanDeep:P(1.00,0.54), cyan:P(0.83,0.84), cyanLight:P(0.43,0.95), white:P(0.10,1.00),
+           blue:P(0.88,0.86,-0.045), teal:P(0.89,0.70,0.035), room:P(0.70,0.33), roomEdge:P(0.70,0.23) };
+}
 
 // ---------- the capped-torus SDF (exact port of ProtoTools cappedTorus/sampleNormalAndDistance) ----------
 // Field space: puck at origin, rim at radius 0.5, screen y down. S = prepared params.
@@ -3589,6 +3876,7 @@ function create(wrap, opts){
 
   // ----- audio feed -----
   function pullViz(){ if(!vizFn) return; const v = vizFn(); if(!v) return;
+    st.ledPal = (cfg.followLed && v.led && v.led.length >= 3) ? paletteFromColor(v.led[0], v.led[1], v.led[2], v.led[3]||0) : null;
     st.e += ((v.energy||0) - st.e)*0.35; st.b += ((v.bass||0) - st.b)*0.4;
     const sp = v.spec||[]; for(let i=0;i<24;i++){ const t = sp.length? sp[Math.min(sp.length-1, Math.floor(i*sp.length/24))] : 0; st.rawSpec[i]=t; st.spec[i] += (t - st.spec[i])*0.5; }
     const isNew = (v.seq==null) ? (sp.length>0) : (v.seq!==st.seq);
@@ -3623,7 +3911,7 @@ function create(wrap, opts){
     r = spring1(st.half, st.halfV, st.halfT, dt); st.half=r[0]; st.halfV=r[1];
     r = spring1(st.weight, st.weightV, st.spatial?cfg.weightSpatial:cfg.weightOmni, dt); st.weight=r[0]; st.weightV=r[1];
     st.volume += (st.volT-st.volume)*Math.min(1,dt*14);
-    { const tp = cfg.palettes[cfg.palette] || cfg.palettes.airplay; const k = Math.min(1, dt*1.6);
+    { const tp = st.ledPal || cfg.palettes[cfg.palette] || cfg.palettes.airplay; const k = Math.min(1, dt*(st.ledPal?2.4:1.6));
       for(const key in tp){ const a = cfg.colors[key], b = tp[key]; if(!a) continue; for(let i=0;i<3;i++) a[i] += (b[i]-a[i])*k; } }
     // particle sim at fixed rate
     prepSDF(S, st.dir, st.spatial?st.half:Math.PI, st.weight, cfg);
@@ -3773,7 +4061,7 @@ function initField(){
   $('#fldclassic').onclick=()=>{FIELD.setSpatial(false);fieldTouched=performance.now();post('/api/soundfield',{spatial:false});};
   const T=[['particles','Particles',500,16000,100],['glowGain','Glow',0,2.5,0.05],['pulseGain','Pulse strength',0,5,0.05],['pulseScale','Pulse reach (lower = farther)',0.5,5,0.1],
            ['pointScale','Sparkle size',0.3,3,0.05],['reactiveFrac','Reactive particles (share)',0.05,1,0.05],['puffGain','Puff strength',0,0.02,0.0005],['puffBeat','Puff on the beat',0,0.02,0.0005],['puffVmax','Puff max speed',0.001,0.02,0.0005],['puffFloat','Puff float time (s)',0,4,0.1],['sceneScale','Background resolution',0.25,1,0.05],['pointGain','Sparkle brightness',0,3,0.05],['haloGain','Puck halo',0,3,0.05],['grain','Grain',0,2,0.05],['flurry','Flurry',0,3,0.05],['weightSpatial','Field weight',0.5,2,0.01],['handleRadius','Handle radius',0.3,0.9,0.01],['scaleM','Metres per room radius',1,6,0.1]];
-  const toggles=[['classicParticles','Sparkles in classic mode'],['showRings','Speaker rings'],['showVolume','Volume rim'],['snapToCell','Snap the puck to a speaker'],['autoPalette','Colours follow the source']];
+  const toggles=[['classicParticles','Sparkles in classic mode'],['showRings','Speaker rings'],['showVolume','Volume rim'],['snapToCell','Snap the puck to a speaker'],['autoPalette','Colours follow the source'],['followLed','Colours follow the LEDs']];
   const box=$('#fieldsliders');
   for(const [k,label,lo,hi,stp] of T){const row=document.createElement('div');row.className='ctl';
     row.innerHTML='<label>'+label+' <b></b></label><input type=range min='+lo+' max='+hi+' step='+stp+' value='+FIELD.cfg[k]+'>';
@@ -4825,7 +5113,7 @@ class H(BaseHTTPRequestHandler):
             self._json(500, {"error": traceback.format_exc().splitlines()[-1]})
 
 def main():
-    sys.stderr.write("syng-agent (b51) on http://0.0.0.0:%d\n" % PORT)
+    sys.stderr.write("syng-agent (b56) on http://0.0.0.0:%d\n" % PORT)
     threading.Thread(target=viz_fanout_loop, daemon=True).start()
     threading.Thread(target=viz_web_loop, daemon=True).start()
     lc_start()

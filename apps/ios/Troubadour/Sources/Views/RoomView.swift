@@ -3,17 +3,16 @@ import UIKit
 import WebKit
 import WidgetKit
 
-/// One room: native now playing (haptic volume, sources, transport, sound mode, scenes), the sound field drawn
-/// natively in Metal, native speakers, and the agent's own setup page embedded (the long tail of settings).
+/// One room, three tabs: **Room** (the sound field drawn natively, with playback under it), **Speakers**, and
+/// **Setup** — all native, with the cell's own page one tap away for anything not surfaced here.
 struct RoomView: View {
     let room: Room
     @State private var tab = 0
     var body: some View {
         TabView(selection: $tab) {
-            NowPlayingView(room: room).tabItem { Label("Now Playing", systemImage: "waveform") }.tag(0)
-            SoundFieldView(room: room).tabItem { Label("Sound Field", systemImage: "circle.dotted") }.tag(1)
+            RoomMainView(room: room).tabItem { Label("Room", systemImage: "circle.dotted") }.tag(0)
             SpeakersView(room: room).tabItem { Label("Speakers", systemImage: "hifispeaker.2") }.tag(2)
-            AgentPage(agent: room.agent, path: "/setup").tabItem { Label("Setup", systemImage: "slider.horizontal.3") }.tag(3)
+            SetupView(room: room).tabItem { Label("Setup", systemImage: "slider.horizontal.3") }.tag(3)
         }
         .navigationTitle(room.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -27,7 +26,7 @@ struct RoomView: View {
     }
 }
 
-// MARK: - now playing
+// MARK: - playback
 
 @MainActor
 final class RoomModel: ObservableObject {
@@ -72,71 +71,179 @@ final class RoomModel: ObservableObject {
     func ping(_ serial: String?) { Task { try? await agent?.post("/api/ping", serial.map { ["serial": $0] } ?? ["all": true]) } }
 }
 
-struct NowPlayingView: View {
+// MARK: - the room page: field on top, what is playing under it
+
+struct RoomMainView: View {
     let room: Room
+    @StateObject private var f: FieldModel
     @StateObject private var m: RoomModel
-    @State private var lastHaptic = -1
-    init(room: Room) { self.room = room; _m = StateObject(wrappedValue: RoomModel(agent: room.agent)) }
+    @State private var sheet: Sheet?
+
+    enum Sheet: String, Identifiable { case mode, scenes; var id: String { rawValue } }
+
+    init(room: Room) {
+        self.room = room
+        _f = StateObject(wrappedValue: FieldModel(agent: room.agent))
+        _m = StateObject(wrappedValue: RoomModel(agent: room.agent))
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 14) {
-                Card("Playback") {
-                    HStack(spacing: 14) {
-                        Artwork(agent: m.agent, source: m.state.active)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(m.state.active?.title.isEmpty == false ? m.state.active!.title : (m.state.active?.displayName ?? "Nothing playing")).font(.headline).lineLimit(2)
-                            Text([m.state.active?.artist, m.state.active?.album].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")).font(.subheadline).foregroundStyle(Theme.muted).lineLimit(1)
-                            if let v = m.state.viaPrimary { Text("via \(v)").font(.caption2).foregroundStyle(Theme.muted) }
-                        }
-                        Spacer()
-                    }
-                    HStack(spacing: 10) {
-                        Button { m.transport("previous") } label: { Image(systemName: "backward.fill") }.buttonStyle(Capsule_())
-                        Button { m.transport(m.state.active?.playing == true ? "pause" : "play") } label: { Image(systemName: m.state.active?.playing == true ? "pause.fill" : "play.fill") }.buttonStyle(Capsule_(filled: true))
-                        Button { m.transport("next") } label: { Image(systemName: "forward.fill") }.buttonStyle(Capsule_())
-                    }
-                    .disabled(m.state.active == nil)
-                    HStack {
-                        ForEach(m.state.sources) { s in
-                            Button(s.displayName) { m.select(s.id) }.buttonStyle(Capsule_(filled: s.active))
-                        }
-                    }
-                    HStack {
-                        Text("Volume").font(.subheadline).foregroundStyle(Theme.muted); Spacer()
-                        Text("\(Int((m.volume * 100).rounded()))").font(.subheadline.weight(.semibold).monospacedDigit())
-                    }
-                    Slider(value: Binding(get: { m.volume }, set: { v in
-                        m.setVolume(v, final: false)
-                        let step = Int(v * 20); if step != lastHaptic { lastHaptic = step; UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.6) }
-                    }), in: 0...1, onEditingChanged: { editing in if !editing { m.setVolume(m.volume, final: true) } })
-                    .tint(.white)
-                    Button(m.state.active?.mute == true ? "Muted" : "Mute") { m.mute() }.buttonStyle(Capsule_(filled: m.state.active?.mute == true))
-                }
-                Card("Sound mode") {
-                    HStack {
-                        Button("Syng") { m.soundMode("syng") }.buttonStyle(Capsule_(filled: m.state.soundMode == "syng"))
-                        Button("Direct") { m.soundMode("direct") }.buttonStyle(Capsule_(filled: m.state.soundMode == "direct"))
-                    }
-                    Text("Syng steers the sound across the speakers and their drivers. Direct: every speaker plays the whole mix through all three drivers at the same level.").font(.caption).foregroundStyle(Theme.muted)
-                }
-                if !m.scenes.isEmpty {
-                    Card("Scenes") {
-                        FlowRow(items: m.scenes) { n in Button(n) { m.applyScene(n) }.buttonStyle(Capsule_(filled: m.lastScene == n)) }
-                    }
-                }
-                if let e = m.error { Text(e).font(.caption).foregroundStyle(Theme.bad) }
-            }
-            .padding(16)
+        VStack(spacing: 0) {
+            FieldCanvas(model: f)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+            footer
         }
         .background(Theme.bg.ignoresSafeArea())
-        .onAppear { m.start() }
-        .onDisappear { m.stop() }
+        .background(DisablesSwipeBack())
+        .onAppear { f.start(); m.start() }
+        .onDisappear { f.stop(); m.stop() }
+        .sheet(item: $sheet) { which in
+            switch which {
+            case .mode: SoundModeSheet(m: m)
+            case .scenes: ScenesSheet(m: m)
+            }
+        }
+    }
+
+    private var nowPlaying: some View {
+        HStack(spacing: 12) {
+            Artwork(agent: m.agent, source: m.state.active, size: 46)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                HStack(spacing: 5) {
+                    Circle().fill(f.live ? Theme.live : Theme.muted.opacity(0.4)).frame(width: 6, height: 6)
+                    Text(subtitle).font(.caption).foregroundStyle(Theme.muted).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 6)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text("\(f.volPct)").font(.subheadline.weight(.semibold).monospacedDigit())
+                Text(f.spatialOn ? "\(f.widthDeg)° · \(f.aimDeg)°" : "all around")
+                    .font(.caption2.monospacedDigit()).foregroundStyle(Theme.muted)
+            }
+        }
+    }
+
+    private var title: String {
+        if let a = m.state.active, !a.title.isEmpty { return a.title }
+        return m.state.active?.displayName ?? "Nothing playing"
+    }
+    private var subtitle: String {
+        let bits = [m.state.active?.artist, m.state.active?.album].compactMap { $0 }.filter { !$0.isEmpty }
+        if !bits.isEmpty { return bits.joined(separator: " · ") }
+        return m.state.active.map { $0.displayName } ?? "drag the puck to move the sound"
+    }
+
+    private var footer: some View {
+        VStack(spacing: 10) {
+            nowPlaying
+            HStack(spacing: 8) {
+                Button { m.transport("previous") } label: { Image(systemName: "backward.fill") }.buttonStyle(Capsule_())
+                Button { m.transport(m.state.active?.playing == true ? "pause" : "play") } label: {
+                    Image(systemName: m.state.active?.playing == true ? "pause.fill" : "play.fill")
+                }.buttonStyle(Capsule_(filled: true))
+                Button { m.transport("next") } label: { Image(systemName: "forward.fill") }.buttonStyle(Capsule_())
+            }
+            .disabled(m.state.active == nil)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    Button("Centre") { f.centrePuck() }.buttonStyle(Chip())
+                    Button(f.spatialOn ? "All around" : "Spatial") { f.setSpatial(!f.spatialOn) }
+                        .buttonStyle(Chip(filled: f.spatialOn))
+                    Button(m.state.soundMode == "direct" ? "Direct" : "Syng") { sheet = .mode }.buttonStyle(Chip())
+                    if !m.scenes.isEmpty { Button("Scenes") { sheet = .scenes }.buttonStyle(Chip()) }
+                    Button(m.state.active?.mute == true ? "Muted" : "Mute") { m.mute() }
+                        .buttonStyle(Chip(filled: m.state.active?.mute == true))
+                    ForEach(m.state.sources) { s in
+                        Button(s.displayName) { m.select(s.id) }.buttonStyle(Chip(filled: s.active))
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+            .padding(.horizontal, -16)
+            if let e = f.error ?? m.error {
+                Text(e).font(.caption2).foregroundStyle(Theme.bad).lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 4)
+    }
+}
+
+/// A capsule that hugs its label — the footer row scrolls, so these are not full width.
+struct Chip: ButtonStyle {
+    var filled = false
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.footnote.weight(.semibold))
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(filled ? Color.white : Theme.surface2, in: Capsule())
+            .foregroundStyle(filled ? Color.black : Color.white)
+            .opacity(configuration.isPressed ? 0.7 : 1)
+    }
+}
+
+struct SoundModeSheet: View {
+    @ObservedObject var m: RoomModel
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 14) {
+                    Card("Sound mode") {
+                        HStack {
+                            Button("Syng") { m.soundMode("syng") }.buttonStyle(Capsule_(filled: m.state.soundMode == "syng"))
+                            Button("Direct") { m.soundMode("direct") }.buttonStyle(Capsule_(filled: m.state.soundMode == "direct"))
+                        }
+                        Text("Syng steers the sound across the speakers and their drivers. Direct: every speaker plays the whole mix through all three drivers at the same level.")
+                            .font(.caption).foregroundStyle(Theme.muted)
+                    }
+                    Card("Volume") {
+                        Slider(value: Binding(get: { m.volume }, set: { m.setVolume($0, final: false) }),
+                               in: 0...1, onEditingChanged: { editing in if !editing { m.setVolume(m.volume, final: true) } })
+                            .tint(.white)
+                        Text("The rim at the bottom of the field does this too — drag from where the volume already sits.")
+                            .font(.caption).foregroundStyle(Theme.muted)
+                    }
+                }
+                .padding(16)
+            }
+            .background(Theme.bg.ignoresSafeArea())
+            .navigationTitle("Sound")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() } } }
+        }
+        .presentationDetents([.medium])
+    }
+}
+
+struct ScenesSheet: View {
+    @ObservedObject var m: RoomModel
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                Card("Scenes") {
+                    FlowRow(items: m.scenes) { n in
+                        Button(n) { m.applyScene(n); dismiss() }.buttonStyle(Capsule_(filled: m.lastScene == n))
+                    }
+                }
+                .padding(16)
+            }
+            .background(Theme.bg.ignoresSafeArea())
+            .navigationTitle("Scenes")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() } } }
+        }
+        .presentationDetents([.medium])
     }
 }
 
 struct Artwork: View {
     let agent: Agent?; let source: Source?
+    var size: CGFloat = 72
     var body: some View {
         Group {
             if let a = agent, let s = source, s.hasArtwork {
@@ -145,7 +252,7 @@ struct Artwork: View {
                 ZStack { Theme.surface2; Image(systemName: "music.note").foregroundStyle(Theme.muted) }
             }
         }
-        .frame(width: 72, height: 72).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .frame(width: size, height: size).clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 

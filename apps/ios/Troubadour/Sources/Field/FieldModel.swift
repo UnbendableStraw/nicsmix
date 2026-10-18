@@ -29,6 +29,7 @@ final class FieldModel: ObservableObject {
         var pointScale: Double = 1.0, pointGain: Double = 1.0
         var radiusUnits: Double = 0.7
         var showVolume = true, showRings = true
+        var followLed = true     // the field glows what the speakers' LEDs are glowing
     }
     var cfg = Cfg()
 
@@ -107,9 +108,11 @@ final class FieldModel: ObservableObject {
     private var reference = (x: 0.0, y: 0.0, r: 1.15, rot: 0.0)
     private var cellsM: [(x: Double, y: Double, active: Bool, serial: String)] = []
 
-    // MARK: palette
+    // MARK: palette — the live LED colour wins, the source's own palette is the fallback
     var palette = FieldPalette.airplay
-    private var paletteTarget = FieldPalette.airplay
+    private var sourcePalette = FieldPalette.airplay
+    private var ledPalette: FieldPalette?
+    private var paletteTarget: FieldPalette { ledPalette ?? sourcePalette }
 
     // MARK: input
     enum Grab: Equatable { case puckOrb, lift, notch, dot(Int), volume }
@@ -210,7 +213,7 @@ final class FieldModel: ObservableObject {
         spring(&weight, &weightVel, spatial ? cfg.weightSpatial : cfg.weightOmni, dt)
         volume += (volTarget - volume) * min(1, dt * 14)
 
-        palette.blend(toward: paletteTarget, min(1, dt * 1.6))
+        palette.blend(toward: paletteTarget, min(1, dt * (ledPalette != nil ? 2.4 : 1.6)))
 
         // the feed went quiet: keep the rows scrolling so the shimmer fades out instead of freezing
         if Date().timeIntervalSince(lastRow) > 0.4 {
@@ -313,10 +316,14 @@ final class FieldModel: ObservableObject {
             Haptics.tap(0.5)
             return
         }
+        // the volume rim: only where the volume currently sits, and only out on the rim itself —
+        // a tap anywhere else along the arc used to jump the volume to that value
         let d = hypot(Double(p.x - centre.x), Double(p.y - centre.y))
         let a = atan2(Double(p.y - centre.y), Double(p.x - centre.x))
-        if cfg.showVolume, d > roomR * 0.92, abs(a - .pi / 2) < Self.volHalf + 0.1 {
-            grab = .volume; volTarget = volFrom(p); sendVolume(false)
+        if cfg.showVolume, d > roomR * 1.0, d < roomR * 1.35, abs(a - .pi / 2) < Self.volHalf + 0.06 {
+            guard abs(volFrom(p) - volume) <= 0.06 else { return }
+            grab = .volume
+            Haptics.tap(0.5)
         }
     }
 
@@ -454,7 +461,7 @@ final class FieldModel: ObservableObject {
         stateTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.pollState()
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
             }
         }
     }
@@ -498,6 +505,12 @@ final class FieldModel: ObservableObject {
             let t = sp.isEmpty ? 0 : sp[min(sp.count - 1, i * sp.count / 24)]
             rawSpec[i] = t
             spec[i] += (t - spec[i]) * 0.5
+        }
+        // what the speaker itself is glowing, straight off the viz feed (agent b52)
+        if cfg.followLed, let led = v["led"] as? [Double], led.count >= 3 {
+            ledPalette = FieldPalette.from(led[0], led[1], led[2], led.count > 3 ? led[3] : 0)
+        } else {
+            ledPalette = nil
         }
         let newSeq = v["seq"] as? Int
         let isNew = newSeq == nil ? !sp.isEmpty : (newSeq != seq)
@@ -634,7 +647,7 @@ final class FieldModel: ObservableObject {
         else { name = "airplay" }
         guard name != source else { return }
         source = name
-        paletteTarget = FieldPalette.named(name)
+        sourcePalette = FieldPalette.named(name)
         switch name {
         case "spotify": sourceTitle = "Spotify"
         case "tidal": sourceTitle = "TIDAL"
@@ -680,6 +693,43 @@ struct FieldPalette {
     static let usb = FieldPalette(deep: rgb(0.25, 0.25, 0.26), cyan: rgb(0.55, 0.55, 0.56), light: rgb(0.80, 0.80, 0.82),
                                   white: rgb(0.98, 0.98, 1.0), blue: rgb(0.40, 0.42, 0.48), teal: rgb(0.50, 0.52, 0.55),
                                   room: rgb(0.20, 0.21, 0.22), roomEdge: rgb(0.14, 0.15, 0.16))
+    /// A whole palette out of one live colour (the speaker's LEDs). Hue and some of the saturation come
+    /// from the light; the value/saturation structure stays the app's own, so the field keeps its depth
+    /// instead of flattening into a wash. nil when the LEDs are off or white — then the source wins.
+    static func from(_ r: Double, _ g: Double, _ b: Double, _ w: Double) -> FieldPalette? {
+        let mx = max(r, max(g, b)), mn = min(r, min(g, b)), d = mx - mn
+        guard mx > 0.03 else { return nil }
+        var h = 0.0
+        if d > 1e-6 {
+            if mx == r { h = ((g - b) / d + (g < b ? 6 : 0)) / 6 }
+            else if mx == g { h = ((b - r) / d + 2) / 6 }
+            else { h = ((r - g) / d + 4) / 6 }
+        }
+        var sat = (d / mx) * (1 - 0.5 * w)
+        guard sat > 0.12 else { return nil }
+        sat = min(max(sat, 0.45), 1.0)
+        func p(_ sm: Double, _ v: Double, _ dh: Double = 0) -> SIMD4<Float> {
+            let c = hsv(h + dh, min(max(sat * sm, 0), 1), v)
+            return rgb(c.0, c.1, c.2)
+        }
+        return FieldPalette(deep: p(1.00, 0.54), cyan: p(0.83, 0.84), light: p(0.43, 0.95), white: p(0.10, 1.00),
+                            blue: p(0.88, 0.86, -0.045), teal: p(0.89, 0.70, 0.035),
+                            room: p(0.70, 0.33), roomEdge: p(0.70, 0.23))
+    }
+    private static func hsv(_ h0: Double, _ s: Double, _ v: Double) -> (Double, Double, Double) {
+        let h = (h0.truncatingRemainder(dividingBy: 1) + 1).truncatingRemainder(dividingBy: 1)
+        let i = Int(h * 6) % 6
+        let f = h * 6 - (h * 6).rounded(.down)
+        let p = v * (1 - s), q = v * (1 - s * f), t = v * (1 - s * (1 - f))
+        switch i {
+        case 0: return (v, t, p)
+        case 1: return (q, v, p)
+        case 2: return (p, v, t)
+        case 3: return (p, q, v)
+        case 4: return (t, p, v)
+        default: return (v, p, q)
+        }
+    }
     static func named(_ n: String) -> FieldPalette {
         switch n {
         case "spotify": return .spotify
