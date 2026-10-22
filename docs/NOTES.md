@@ -1,4 +1,4 @@
-# Hacking on Troubadour — workflow and gotchas
+# Working on Troubadour — workflow and gotchas
 
 ## Where things are
 | Path | |
@@ -105,3 +105,56 @@ the sender stalling. A separate irregular dropout (around :20 on some days, 1 s+
 Fixes, in order: fixed channels on the APs (5 GHz 153 / 36 as they sit, 2.4 GHz 1); then, if anything is left, a
 larger SourceCast network buffer (`maxNetworkLatency_ms` 50 -> ~250) so a short AP hiccup is absorbed. Note b61:
 `/api/discover` no longer sweeps the /24 on every call (it ARP-stormed the Wi-Fi every 15 s while an app was open).
+
+Scanned access point's logs and struck some concrete info;
+
+What causes it: UniFi’s wireless daemon (wevent) keeps a list of the other access points on your network so it can help devices roam between them. To keep that list current, every hour at :34:12 the LivingRoom access point leaves channel 153 to measure the Hallway access point on channel 36. It does this twice, about 8–10 seconds apart. For that moment it stops answering the primary speaker, the primary’s radio freezes on both Wi-Fi and SyFi, and the group runs dry.
+
+Why :34: the timer started when the controller last re-provisioned the access point (Oct 8, 14:13), and has kept that phase since. That’s why only a full network-stack restart ever moved it.
+Why only some hours of the night are bad: at :14 the same timer handles 2.4 GHz, where both access points share channel 1, so no channel hop is needed. At :54 it hops on the 6 GHz radio, which the speakers don’t use.
+
+Fixes, all UniFi changes for you to make:
+
+Put both access points’ 5 GHz on the same channel (for example both on 153, or both on 36). The access point skips the hop for a neighbor on its own channel, exactly as it does on 2.4 GHz, so this should end the hourly dropout. The trade-off is that both share one channel’s capacity.
+Turn off BSS Transition and Roaming Assistance on your speakers’ network and watch the next :34. This might stop the neighbor checks, but I couldn’t confirm which setting drives them. The startup script forces 802.11k measurement on regardless of UniFi’s toggle.
+Raise the group buffer to about 600–800 ms in the GROUP STREAM card. The longest silence I measured was about 0.6 s, so the dropout would become inaudible whatever the access point does. Audio takes slightly longer to start; music doesn’t mind.
+Long term, wire the primary speaker with Ethernet. Its radio would then only carry SyFi, so an access point hiccup couldn’t freeze it.
+
+## Debugging "AirPlay stops answering for a minute or two"
+
+- `journalctl -u airplay2source` shows `terminate called after throwing an instance of 'sdbus::Error'` with
+  `what(): [System.Error.EBUSY] Failed to exit a variant` (or `ENXIO … Failed to enter a variant`), then systemd's
+  `code=dumped, status=6/ABRT` two-plus minutes later. Seen 2026-10-15 and 2026-10-18, both just after a spatial stream
+  started: `Format Changed: APAC_48KHz_7_1_4`, `New channel layout: L R C Lfe Lss Rss Tfl Tfr Trl Trr Lrs Rrs`.
+  Not every spatial start crashes. It predates our firmware.
+- The gap is the core dump: `/usr/bin/syng-coredump` pipes a ~150 MB core into systemd-coredump, which compresses it
+  until its own runtime limit stops it (leaving half-written `.#core.airplay2source.*` in /var/lib/systemd/coredump);
+  AirPlay is gone throughout. With `LimitCORE=0` the dump is skipped and the process is reaped in ~0.3 s
+  (Setup → AirPlay & Atmos → Quick recovery).
+- The throw itself is inside airplay2source (stock code, sdbus-c++). In `AirPlay2Source::initializeFormat` the call to
+  `Provider::setChannelLayout` is wrapped (it logs "D-Bus error occurred while setChannelLayout"), but the exception
+  that kills the process is raised by D-Bus work elsewhere in starting a stream, where nothing catches it. A variant
+  enter/exit failing with EBUSY/ENXIO is what sd-bus reports when a message is being built or read on one connection
+  from two threads at once (airplay2source runs 11 threads), but enter/exit are the *read* side, so a likelier cause is
+  an incoming message whose variant has an unexpected type, read in a handler without a catch. Not identified yet. Reported to
+  Syng (docs/SYNG-AIRPLAY.md).
+- Atmos itself works: the decoder is created once Apple sends its config, and the source produces 12 channels. Syng's
+  badge (`badgingType`) says "Stereo" regardless.
+- Don't write `enableHeightProcessing`: cellbroker owns it (`set_room_state` → `enable_height_processing(have_height_cells)`,
+  true once the room has more than one height layer) and rewrites it on every room-state change. b63 forced it and
+  the two fought. The real control is each speaker's `height_layer` (Layout card, or Setup → AirPlay & Atmos). Syng
+  Studio sets it through the cloud (MQTT `HEIGHT_LAYER_UPDATE`), which an offline room never hears back from.
+- The renderer is in `/usr/lib/python3.7/site-packages/syng/cellbroker/shaders.py` (`variable_71_4_shader`,
+  `generic_surround_shader`): height channels sit on the floor ring at ±45°/±135° with one height layer, and go up to
+  0.6 × the next layer when a speaker is marked high.
+
+## Debugging "AirPlay goes silent at a new track, but says it's playing"
+
+- `journalctl -u airplay2source`: a lone `_bufProcessPacket  err = -6743` (CoreUtils kSizeErr) mid-stream, with no
+  `Teardown` / `Format Changed` / `ProcessPkt Flush Complete` after it, is the stuck stream. The sender carried on into
+  the next track in the same buffered stream and Syng's receiver stopped taking it. A skip that logs `Flushing
+  receiver complete: flushSeq 0` doesn't help; the next one, with a real `flushSeq` followed by `ProcessPkt Flush
+  Complete`, does. A normal track change from a sender that tears down between tracks logs the same -6743, then
+  `Teardown` and a new `Setting up stream connection` within half a second.
+- b65's watchdog does the second skip's job: pause, then play, after 4 s of silence that follows an uncleared -6743
+  (`AIRPLAY SILENCE` lines in `journalctl -u syng-agent`).

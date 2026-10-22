@@ -41,7 +41,11 @@ tab, the agent's own pages where they are already the right thing:
 `Endpoint` (one `GET /api/…`, refreshed on a timer, posts back) plus a layout, so the agent's JSON is
 read straight out rather than modelled twice. `Sources/Views/LayoutView.swift` is the room plan:
 drag a speaker to move it, tap it to turn it, fit a circle, hear it, then **Soundcheck ×3**, with the
-pass counter, the residual and the per-pair spread / reciprocity the b51 solver reports.
+pass counter, the residual and the per-pair spread / reciprocity the b51 solver reports. Since the parity pass
+(2026-10-21) the app covers everything the speaker's own page does except its debug panel: see CHANGELOG b73 for
+the list (progress and capabilities on the now-playing row, the Sound sheet's ceiling / spread / sleep / spatial
+flags / room correction, live speakers, room create / move, LED tuning and animations, network radios and static
+addresses, firmware distribution, system health and eMMC decode, circle and listener editing on the plan).
 
 ## iPad
 
@@ -70,6 +74,25 @@ speakers' volume (`KidsVolume.cap`), on top of the ceiling set in the main app (
 speakers enforce whatever sends the volume. It remembers the last room; with one room it opens straight into it.
 For a child's iPad, Guided Access (Settings → Accessibility) keeps them in the app.
 
+## Troubadour TV (Apple TV)
+
+A third app in the same project (target `TroubadourTV`, scheme *Troubadour TV*, tvOS 17): pick a room once, and from
+then on it opens straight into that room's live sound field, full screen — the same field model, Metal renderer and
+shaders as the phone (40k particles). The field follows the room (the puck, its width and aim, Spatial, the layout and
+the colours follow whatever the phone or the speakers are doing) and the Siri Remote steers it:
+
+* ◀ ▶ previous / next room · ▲ ▼ volume (3 % steps, a toast shows the level) · ⏯ play / pause · click shows what's
+  playing (room, track, ATMOS badge, the album art) for a few seconds · Menu back to the rooms.
+* **Hold click** opens the controls, a panel on the right: Classic / Spatial, Centre the puck, **Move the puck…**
+  (the touch surface becomes a trackpad for the puck — swipe to move, it snaps to a speaker like a drag does; click or
+  Menu when done; the ring's edges nudge it too), Narrower / Wider and Aim ⟲ ⟳ in Spatial, Previous / Play / Next
+  and Quieter / Louder, Colours follow (LEDs / album artwork / the source's palette), Particles (Syng app physics /
+  previous puff physics, Drift gently when idle, Puff with the music, artwork in the puck), **Always show what's
+  playing** (the panel never fades), Choose a room. The look settings are remembered on the Apple TV.
+* The screen saver stays off while a field is showing. tvOS asks for Local Network access on first launch. Shared
+  code builds for tvOS: no touch handling or haptics there (`#if os(tvOS)` in `FieldView.swift`), no WidgetKit. tvOS
+  wants an app icon set for App Store builds; running from Xcode works without one.
+
 ## Widgets
 
 Three home-screen widgets, acting on the room the app last opened: **Sound Field** (small, medium — the room from
@@ -96,7 +119,7 @@ cd apps/ios && xcodegen generate && open Troubadour.xcodeproj
 ```
 Pick your team under Signing & Capabilities, run on a device on the same Wi-Fi as the cells. iOS asks for
 Local Network access on first launch — that is the Bonjour browse plus HTTP to the speakers; nothing leaves
-the LAN. Requires iOS 16.
+the LAN. Requires iOS 16 (the Apple TV app: tvOS 17, scheme *Troubadour TV*, run on an Apple TV paired with Xcode).
 
 No third-party dependencies. `Sources/Model/Agent.swift` is the whole API client (≈100 lines); the endpoints are
 documented in `docs/SETUP.md`. The setup page is served by the cells, so an agent update updates that screen

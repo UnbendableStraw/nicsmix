@@ -10,7 +10,7 @@
 #   2. copy every file under overlay/ into partition 2 (the rootfs), creating directories, setting
 #      modes (+x for bin/ and *.sh/*.py), keeping symlinks (etc/systemd/system/*.wants/*)
 #   3. sshd: root login + password + pubkey; AuthorizedKeysFile also reads /etc/ssh/authorized_keys.d/<user>
-#   4. root password from $ROOT_PASSWORD (default SyngCell.dev — change it on first login!)
+#   4. root auth: key-only when an SSH key is available; else $ROOT_PASSWORD, else a printed random one (§1.9)
 #   5. your SSH public key(s) from $SSH_PUBKEY or ~/.ssh/id_ed25519.pub into /etc/ssh/authorized_keys.d/root
 #   6. mask otamanager (no cloud OTA can revert the mods); enable syng-agent + syng-cloud-block units
 #   8. troubadour-rootfs-<artifact>.img.gz: the rootfs alone, for in-place updates from the setup page (OTA=0 skips it)
@@ -23,7 +23,9 @@ OUT="${2:-build}"
 HERE="$(cd "$(dirname "$0")/../.." && pwd)"          # repo root
 OVERLAY="$HERE/overlay"
 ROOTFS_OFFSET="${ROOTFS_OFFSET:-301989888}"                               # partition 2 (see fdisk -l image.sdcard)
-ROOT_PASSWORD="${ROOT_PASSWORD:-SyngCell.dev}"
+# §1.9: no shared baked password. If you don't set ROOT_PASSWORD, the build either goes key-only (when an
+# SSH key is available) or mints a random password and prints it once. Set ROOT_PASSWORD=... to force one.
+ROOT_PASSWORD="${ROOT_PASSWORD:-}"
 DEBUGFS="${DEBUGFS:-$(command -v debugfs || echo /usr/local/opt/e2fsprogs/sbin/debugfs)}"
 [ -x "$DEBUGFS" ] || { echo "debugfs not found (brew install e2fsprogs / apt install e2fsprogs)"; exit 1; }
 mkdir -p "$OUT"
@@ -59,7 +61,8 @@ link() { mkdirp "$(dirname "$1")"; { echo "rm $1"; echo "symlink $1 $2"; } >> "$
 # 2. the overlay
 while IFS= read -r -d '' f; do
   rel="${f#$OVERLAY}"
-  case "$rel" in */.DS_Store|*/README*|*/.gitkeep) continue;; esac
+  # §1.13: never stamp editor/build cruft into the image
+  case "$rel" in */.DS_Store|*/README*|*/.gitkeep|*/__pycache__/*|*.pyc|*.pyo|*.bak|*.orig|*.swp|*~) continue;; esac
   if [ -L "$f" ]; then link "$rel" "$(readlink "$f")"; continue; fi
   mode=0100644
   case "$rel" in /usr/bin/*|/usr/sbin/*|/bin/*|/sbin/*|*.sh|*.py) mode=0100755;; esac
@@ -67,30 +70,54 @@ while IFS= read -r -d '' f; do
   put "$f" "$rel" "$mode"
 done < <(find "$OVERLAY" \( -type f -o -type l \) -print0)
 
+# 3+4+5. Decide the auth posture FIRST (§1.9). Gather the SSH key(s); then:
+#   - ROOT_PASSWORD set explicitly        -> use it, password auth on
+#   - else a key is available             -> key-only: password auth off, root password locked (no baked secret)
+#   - else no key and no password          -> mint a random password, print it once, password auth on
+KEYS="$TMP/authorized_keys"
+{ echo "# SSH public keys for root (read via AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u)"
+  if [ -n "${SSH_PUBKEY:-}" ]; then echo "$SSH_PUBKEY"; elif [ -f "$HOME/.ssh/id_ed25519.pub" ]; then cat "$HOME/.ssh/id_ed25519.pub"; fi
+  [ -f "$OVERLAY/etc/ssh/authorized_keys.d/root" ] && grep -v '^#' "$OVERLAY/etc/ssh/authorized_keys.d/root" || true
+} > "$KEYS"
+HAVE_KEY=0; grep -qE '^(ssh|ecdsa|sk-)' "$KEYS" && HAVE_KEY=1
+GEN_PW=""
+if [ -n "$ROOT_PASSWORD" ]; then
+  PW_AUTH=yes; PW_SET=1
+elif [ "$HAVE_KEY" = 1 ]; then
+  PW_AUTH=no;  PW_SET=0                               # key-only, no baked password
+else
+  GEN_PW="$(head -c12 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-16)"
+  ROOT_PASSWORD="$GEN_PW"; PW_AUTH=yes; PW_SET=1
+fi
+
 # 3. sshd_config: start from the stock file so upstream changes are kept
 dbgq "cat /etc/ssh/sshd_config" > "$TMP/sshd_config"
-python3 - "$TMP/sshd_config" <<'EOF'
-import sys, re
-p = sys.argv[1]; s = open(p).read()
+PW_AUTH="$PW_AUTH" python3 - "$TMP/sshd_config" <<'EOF'
+import sys, re, os
+p = sys.argv[1]; s = open(p).read(); pwauth = os.environ["PW_AUTH"]
 def setopt(s, key, val):
     pat = re.compile(r"^#?\s*%s\b.*$" % re.escape(key), re.M)
     return pat.sub("%s %s" % (key, val), s, count=1) if pat.search(s) else s + "\n%s %s\n" % (key, val)
-for k, v in (("PermitRootLogin", "yes"), ("PasswordAuthentication", "yes"), ("PubkeyAuthentication", "yes"),
+for k, v in (("PermitRootLogin", "prohibit-password" if pwauth == "no" else "yes"),
+             ("PasswordAuthentication", pwauth), ("PubkeyAuthentication", "yes"),
              ("PermitEmptyPasswords", "no"), ("AuthorizedKeysFile", ".ssh/authorized_keys /etc/ssh/authorized_keys.d/%u")):
     s = setopt(s, k, v)
 open(p, "w").write(s)
 EOF
 put "$TMP/sshd_config" /etc/ssh/sshd_config 0100644
 
-# 4. root password
+# 4. root password (or lock it, in key-only mode)
 dbgq "cat /etc/shadow" > "$TMP/shadow"
-HASH="$(python3 -c 'import crypt,sys; print(crypt.crypt(sys.argv[1], crypt.mksalt(crypt.METHOD_SHA512)))' "$ROOT_PASSWORD" 2>/dev/null || openssl passwd -6 "$ROOT_PASSWORD")"
+if [ "$PW_SET" = 1 ]; then
+  HASH="$(python3 -c 'import crypt,sys; print(crypt.crypt(sys.argv[1], crypt.mksalt(crypt.METHOD_SHA512)))' "$ROOT_PASSWORD" 2>/dev/null || openssl passwd -6 "$ROOT_PASSWORD")"
+else
+  HASH='!'                                            # locked: no password login
+fi
 python3 - "$TMP/shadow" "$HASH" <<'EOF'
 import sys
 p, h = sys.argv[1], sys.argv[2]
-lines = open(p).read().splitlines()
 out = []
-for l in lines:
+for l in open(p).read().splitlines():
     f = l.split(":")
     if f[0] == "root": f[1] = h; l = ":".join(f)
     out.append(l)
@@ -98,12 +125,7 @@ open(p, "w").write("\n".join(out) + "\n")
 EOF
 put "$TMP/shadow" /etc/shadow 0100400
 
-# 5. authorized keys
-KEYS="$TMP/authorized_keys"
-{ echo "# SSH public keys for root (read via AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u)"
-  if [ -n "${SSH_PUBKEY:-}" ]; then echo "$SSH_PUBKEY"; elif [ -f "$HOME/.ssh/id_ed25519.pub" ]; then cat "$HOME/.ssh/id_ed25519.pub"; fi
-  [ -f "$OVERLAY/etc/ssh/authorized_keys.d/root" ] && grep -v '^#' "$OVERLAY/etc/ssh/authorized_keys.d/root" || true
-} > "$KEYS"
+# 5. authorized keys (gathered above)
 put "$KEYS" /etc/ssh/authorized_keys.d/root 0100644
 
 # 6. units: mask OTA, enable ours
@@ -121,8 +143,21 @@ put "$TMP/main.conf" /etc/connman/main.conf 0100644
 
 echo "applying $(grep -c '^write' "$CMDS") files / $(grep -c '^symlink' "$CMDS") links to the rootfs…"
 "$DEBUGFS" -w -f "$CMDS" "$FS" 2>&1 | grep -v "^debugfs [0-9]\|^debugfs: \(mkdir\|rm\|sif\|write\|symlink\)\|File not found by ext2_lookup\|rm: File not found\|already exists" || true
-"$DEBUGFS" -R "stat /usr/bin/syng-agent" "$FS" 2>/dev/null | grep -q "Type: regular" && echo "ok: /usr/bin/syng-agent present" || { echo "FAILED: agent not in image"; exit 1; }
+# §1.13: the debugfs run above ends in `|| true` (debugfs is noisy), so a failed write of a critical file
+# would otherwise pass silently. Verify each one is actually present and fail hard if not.
+verify_file() { "$DEBUGFS" -R "stat $1" "$FS" 2>/dev/null | grep -q "Type: regular" || { echo "FAILED: $1 missing from image"; exit 1; }; echo "ok: $1 present"; }
+verify_file /usr/bin/syng-agent
+verify_file /etc/shadow
+verify_file /etc/ssh/sshd_config
+verify_file /etc/ssh/authorized_keys.d/root
 "$DEBUGFS" -R "stat /etc/systemd/system/otamanager.service" "$FS" 2>/dev/null | grep -q "Fast link dest: \"/dev/null\"" && echo "ok: otamanager masked"
+case "$PW_AUTH" in
+  no) echo "auth: KEY-ONLY (password login disabled, root password locked)";;
+  *)  if [ -n "$GEN_PW" ]; then
+        echo "auth: PASSWORD login enabled. No key was found, so a random root password was generated:"
+        echo "      root password:  $GEN_PW   <-- save this; it is not stored anywhere else"
+      else echo "auth: PASSWORD login enabled with the ROOT_PASSWORD you supplied."; fi;;
+esac
 # bootloader + flash tooling next to the image so `cd <out-dir> && ./flash.sh` works
 SRCDIR="$(cd "$(dirname "$SRC")" && pwd)"; OUTDIR="$(cd "$OUT" && pwd)"
 if [ "$SRCDIR" != "$OUTDIR" ]; then

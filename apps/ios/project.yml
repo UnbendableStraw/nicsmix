@@ -4,6 +4,7 @@ options:
   bundleIdPrefix: space.troubadour
   deploymentTarget:
     iOS: "16.0"
+    tvOS: "17.0"
   createIntermediateGroups: true
 settings:
   base:
@@ -72,6 +73,33 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: space.troubadour.kids
         DEVELOPMENT_TEAM: ""
         CODE_SIGN_STYLE: Automatic
+  TroubadourTV:                    # Apple TV: pick a room, then its live sound field full screen (mirrors the room, sends nothing)
+    type: application
+    platform: tvOS
+    deploymentTarget: "17.0"
+    sources:
+      - TroubadourTV
+      - Troubadour/Sources/Model/Fleet.swift
+      - Troubadour/Sources/Model/Agent.swift
+      - Troubadour/Sources/Model/Theme.swift
+      - Troubadour/Sources/Field                 # the same field model, Metal renderer and shaders as the phone
+    info:
+      path: TroubadourTV/Info.plist
+      properties:
+        CFBundleDisplayName: Troubadour
+        UIUserInterfaceStyle: Dark
+        NSLocalNetworkUsageDescription: Troubadour finds your Syng Cells on the local network to show their sound field. Nothing leaves your network.
+        NSBonjourServices: [_syng._tcp, _http._tcp]
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoads: true
+        UILaunchScreen: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: space.troubadour.tv
+        TARGETED_DEVICE_FAMILY: "3"
+        DEVELOPMENT_TEAM: ""
+        CODE_SIGN_STYLE: Automatic
   TroubadourWidgets:
     type: app-extension
     platform: iOS
@@ -82,6 +110,7 @@ targets:
       - Troubadour/Sources/Model/Shared.swift
       - Troubadour/Sources/Model/Theme.swift
       - Troubadour/Sources/Field/FieldModel.swift    # the visualizer widget draws the app's own field model
+      - Troubadour/Sources/Field/ColourGeneratorData.swift   # FieldModel's colour histograms
     info:
       path: TroubadourWidgets/Info.plist
       properties:
@@ -107,6 +136,9 @@ schemes:
     run: { config: Debug }
   Troubadour Kids:                 # the kids' app, its own install
     build: { targets: { TroubadourKids: all } }
+    run: { config: Debug }
+  Troubadour TV:                   # the Apple TV app
+    build: { targets: { TroubadourTV: all } }
     run: { config: Debug }
   Widget - Sound Field:            # previews a single widget straight from Xcode
     build: { targets: { TroubadourWidgets: all, Troubadour: all } }

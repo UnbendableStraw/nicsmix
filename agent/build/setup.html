@@ -38,6 +38,13 @@ header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
 .btn.sm{padding:5px 10px;font-size:12px;border-radius:9px}.btn:disabled{opacity:.45;cursor:default}
 .btn.danger{border-color:color-mix(in srgb,var(--bad) 50%,var(--line));color:var(--bad)}
 .rowb{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
+.rowb.sw{justify-content:space-between;flex-wrap:nowrap;gap:14px}
+.switch{position:relative;display:inline-block;width:46px;height:26px;flex:none}
+.switch input{opacity:0;width:0;height:0}
+.switch span{position:absolute;inset:0;border-radius:13px;background:var(--line);transition:background .15s}
+.switch span:before{content:"";position:absolute;width:20px;height:20px;left:3px;top:3px;border-radius:50%;background:#fff;transition:transform .15s}
+.switch input:checked+span{background:var(--live)}
+.switch input:checked+span:before{transform:translateX(20px)}
 input[type=text],input[type=password],input[type=number],select{font:inherit;font-size:13px;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--surface2);color:var(--text);min-width:0}
 input[type=number]{width:74px}
 .list{display:grid;gap:8px}
@@ -133,6 +140,23 @@ window.cycleTheme=function(){t=T[(T.indexOf(t)+1)%T.length];try{localStorage.set
   <p class=hint>Soundcheck plays chirps from every speaker in turn (about a minute per speaker) and measures positions, orientation, walls and room EQ on the speakers themselves; playback is paused meanwhile. Keep the room quiet. <b>×3</b> runs it three times and solves the layout from the median of the measurements — use it when a single run looks off. Results are stored by this firmware — no Syng account involved.</p>
 </div>
 
+<div class=card id=apcard><h2>AIRPLAY &amp; ATMOS <span><button class="btn sm" id=aprefresh>Refresh</button></span></h2>
+  <div id=apnow class=muted>…</div>
+  <div style="margin-top:12px"><b>Height</b> <span id=aphp class=muted></span>
+    <div class=muted style="font-size:12px;margin-top:2px">Atmos' four overhead channels always play. With every speaker on the floor layer they are spread around the
+      ring at ear height; mark the speakers that sit up high and Syng lifts the height channels onto them (it turns height processing on by itself).</div></div>
+  <div id=aplayers style="display:flex;flex-direction:column;gap:6px;margin:8px 0 6px"></div>
+  <div class="rowb sw"><div><b>Fill surround channels</b><div class=muted style="font-size:12px">Syng's <code>enableBeyondStereoDuplication</code> — nothing in the firmware or Syng's apps sets it; an experiment</div></div>
+    <label class=switch><input type=checkbox id=apfill><span></span></label></div>
+  <div class="rowb sw"><div><b>Unstick silent track changes</b><div class=muted style="font-size:12px">When AirPlay goes quiet at a new track but still says "playing", pause and play it back in (<span id=apsil>…</span>)</div></div>
+    <label class=switch><input type=checkbox id=apsilence><span></span></label></div>
+  <div class="rowb sw"><div><b>Quick AirPlay recovery</b><div class=muted style="font-size:12px">If AirPlay crashes, it's back in ~3 s instead of a 2-minute core dump</div></div>
+    <label class=switch><input type=checkbox id=apquick><span></span></label></div>
+  <p class=hint>The switches apply to every speaker on the network at once. Syng's own badge says "Stereo" even during Atmos — the
+    line at the top reads the real channel layout instead.</p>
+  <div id=apcells class=muted style="font-size:12px;margin-top:6px"></div>
+</div>
+
 <div class=card id=streamcard><h2>GROUP STREAM <span><button class="btn sm" id=strefresh>Refresh</button></span></h2>
   <div class=muted id=nbinfo>…</div>
   <div class=rowb style="margin-top:8px"><label class=muted style="flex:1;display:flex;gap:10px;align-items:center">Network buffer
@@ -186,10 +210,12 @@ window.cycleTheme=function(){t=T[(T.indexOf(t)+1)%T.length];try{localStorage.set
 const $=s=>document.querySelector(s);
 let ME=null, ROOM=null, DISC=null, dirty=false, primaryIp=null;
 const toast=(m,bad)=>{const t=$('#toast');t.textContent=m;t.style.borderColor=bad?'var(--bad)':'var(--line)';t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),3200);};
+function TH(){const h={'Content-Type':'application/json'};let t;try{t=localStorage.getItem('tbtok');}catch(e){}if(t)h['X-Troubadour-Token']=t;return h;} // §1.6
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); // §1.8
 async function api(path,body,ip){ // ip: another cell (relayed through this one so it works over the USB link)
   let r;
-  if(ip&&ME&&ip!==ME.ip) r=await fetch('/api/relay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,path,method:body?'POST':'GET',body})});
-  else r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:undefined);
+  if(ip&&ME&&ip!==ME.ip) r=await fetch('/api/relay',{method:'POST',headers:TH(),body:JSON.stringify({ip,path,method:body?'POST':'GET',body})});
+  else r=await fetch(path,body?{method:'POST',headers:TH(),body:JSON.stringify(body)}:undefined);
   const j=await r.json().catch(()=>({}));
   if(!r.ok||j.error){throw new Error(j.error||('HTTP '+r.status));}
   return j;
@@ -202,7 +228,7 @@ function renderMe(){
   const b=[];
   b.push(`<span class="badge role">${m.role||'standalone'}</span>`);
   b.push(`<span class="badge ${m.calibrated?'good':'warn'}">${m.calibrated?'calibrated':'not calibrated'}</span>`);
-  if(m.wifi&&m.wifi.ssid) b.push(`<span class=badge>Wi-Fi ${m.wifi.ssid}</span>`); else b.push(`<span class="badge warn">no Wi-Fi${m.room_name?' — join Wi-Fi below: a wired-only speaker cannot take a room role (the firmware waits for Wi-Fi)':''}</span>`);
+  if(m.wifi&&m.wifi.ssid) b.push(`<span class=badge>Wi-Fi ${esc(m.wifi.ssid)}</span>`); else b.push(`<span class="badge warn">no Wi-Fi${m.room_name?' — join Wi-Fi below: a wired-only speaker cannot take a room role (the firmware waits for Wi-Fi)':''}</span>`);
   if(m.room_name) b.push(`<span class=badge>${(m.members||[]).length} in room</span>`);
   b.push(`<span class="badge ${m.cloud_blocked?'good':'warn'}">${m.cloud_blocked?'cloud blocked · offline mode':'Syng cloud reachable'}</span>`);
   if(m.syfiGood!=null&&m.role) b.push(`<span class="badge ${m.syfiGood?'good':''}">SyFi ${m.syfiGood?'ok':'—'}</span>`);
@@ -217,9 +243,9 @@ async function loadWifi(scan){
   $('#netstatus').textContent='…';
   const w=scan?{services:(await api('/api/wifi/scan')).services}:await api('/api/wifi');
   const cur=(w.services||[]).find(s=>s.connected);
-  $('#netstatus').innerHTML=`${cur?'Connected to <b>'+cur.name+'</b>':'<span class=warn>Not connected to Wi-Fi</span>'} · address ${ME.ip||'—'}`+((ME.ips||[]).length>1?' <span class=muted>('+ME.ips.map(a=>a[0]+' '+a[1]).join(', ')+')</span>':'');
-  $('#wifilist').innerHTML=(w.services||[]).map(s=>`<div class=item><span class=grow><b>${s.name||'(hidden)'}</b> <span class=k>${s.security}${s.connected?' · connected':''}${s.autoconnect?' · saved':''}</span></span>
-    ${s.connected?'':`<button class="btn sm" data-c="${s.name}">Connect</button>`}${s.autoconnect?`<button class="btn sm" data-f="${s.name}">Forget</button>`:''}</div>`).join('')||'<div class=muted>No networks listed — press Scan Wi-Fi.</div>';
+  $('#netstatus').innerHTML=`${cur?'Connected to <b>'+esc(cur.name)+'</b>':'<span class=warn>Not connected to Wi-Fi</span>'} · address ${ME.ip||'—'}`+((ME.ips||[]).length>1?' <span class=muted>('+ME.ips.map(a=>a[0]+' '+a[1]).join(', ')+')</span>':'');
+  $('#wifilist').innerHTML=(w.services||[]).map(s=>`<div class=item><span class=grow><b>${esc(s.name)||'(hidden)'}</b> <span class=k>${s.security}${s.connected?' · connected':''}${s.autoconnect?' · saved':''}</span></span>
+    ${s.connected?'':`<button class="btn sm" data-c="${esc(s.name)}">Connect</button>`}${s.autoconnect?`<button class="btn sm" data-f="${esc(s.name)}">Forget</button>`:''}</div>`).join('')||'<div class=muted>No networks listed — press Scan Wi-Fi.</div>';
   $('#wifilist').querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>wifiJoin(b.dataset.c));
   $('#wifilist').querySelectorAll('[data-f]').forEach(b=>b.onclick=async()=>{await api('/api/wifi/forget',{ssid:b.dataset.f});loadWifi();});
 }
@@ -239,9 +265,9 @@ async function loadDiscover(){
   const rooms=DISC.rooms||[];
   $('#rooms').innerHTML=rooms.map(r=>{
     const mine=ME.room_id&&r.room_id===ME.room_id; const noRoom=r.room_id==='?';
-    const cells=r.cells.map(c=>`<div class="item ${c.isMe?'me':''}"><span class=grow><b>${c.name||('Cell '+short(c.serial))}</b> <span class=k>${c.name?short(c.serial)+' · ':''}${c.ip}${c.isMe?' · this speaker':''}${c.stock?' · stock firmware (no agent)':''}</span></span>
+    const cells=r.cells.map(c=>`<div class="item ${c.isMe?'me':''}"><span class=grow><b>${c.name?esc(c.name):('Cell '+short(c.serial))}</b> <span class=k>${c.name?short(c.serial)+' · ':''}${c.ip}${c.isMe?' · this speaker':''}${c.stock?' · stock firmware (no agent)':''}</span></span>
        <span class=k>${c.role||''}${c.calibrated?' · calibrated':''}</span>${c.agent?`<button class="btn sm" data-ping="${c.serial}">ping</button>`:''}${c.isMe||!c.agent?'':`<a class="btn sm" href="http://${c.ip}:8080/setup">open</a>`}</div>`).join('');
-    const title=noRoom?'Not in a room':(r.room_name||'(unnamed room)');
+    const title=noRoom?'Not in a room':esc(r.room_name||'(unnamed room)');
     const btn=(!mine&&!noRoom&&r.primary_ip)?`<button class="btn sm pri" data-join="${r.primary_ip}">Join this room with this speaker</button>`:(mine?'<small>your room</small>':'');
     return `<div class=room><h3><span>${title} <small>${r.cells.length} speaker${r.cells.length>1?'s':''}</small></span>${btn}</h3><div class=list>${cells}</div></div>`;
   }).join('')||'<div class=muted>No other speakers found.</div>';
@@ -422,7 +448,7 @@ $('#identify').onclick=()=>{ if(idTimer){clearInterval(idTimer);idTimer=null;hiC
 function renderTable(full=true){
   if(!L)return;
   if(full){$('#cells').innerHTML='<tr><th>SPEAKER</th><th>ROLE</th><th>X m</th><th>Y m</th><th>Z m</th><th>TURN °</th><th>CEILING</th><th>LAYER</th><th></th></tr>'+L.cells.map((c,i)=>`<tr data-i=${i}>
-    <td><b>${c.name||short(c.serial)}</b>${c.isMe?' <span class=muted>(this)</span>':''} <button class="btn sm" data-nm=${i} title="Name this speaker" style="padding:2px 7px;font-size:11px">name</button><div class=muted>${c.name?short(c.serial)+' · ':''}${c.ip}${c.cal?'':' · uncalibrated'}</div></td>
+    <td><b>${c.name?esc(c.name):short(c.serial)}</b>${c.isMe?' <span class=muted>(this)</span>':''} <button class="btn sm" data-nm=${i} title="Name this speaker" style="padding:2px 7px;font-size:11px">name</button><div class=muted>${c.name?short(c.serial)+' · ':''}${c.ip}${c.cal?'':' · uncalibrated'}</div></td>
     <td>${c.role||''}${c.role!=='primary'?` <button class="btn sm" data-pin=${i}>make primary</button>`:''}</td>
     <td><input type=number step=0.01 data-f=x value="${c.x}"></td><td><input type=number step=0.01 data-f=y value="${c.y}"></td><td><input type=number step=0.05 data-f=z value="${c.z}"></td>
     <td><input type=number step=1 data-f=rot value="${c.rot}"></td>
@@ -579,7 +605,7 @@ function nbShow(){
 async function loadNB(){
   try{NB=await api('/api/netbuffer');
     const cs=NB.cells.filter(c=>c.ms!=null);
-    $('#nbinfo').innerHTML=NB.mixed?('Not the same on every speaker: '+cs.map(c=>`${c.name||short(c.serial)} ${c.ms} ms`).join(' · '))
+    $('#nbinfo').innerHTML=NB.mixed?('Not the same on every speaker: '+cs.map(c=>`${c.name?esc(c.name):short(c.serial)} ${c.ms} ms`).join(' · '))
       :`${NB.ms} ms on ${cs.length} speaker${cs.length==1?'':'s'}${cs.length&&cs[0].dualPath?' · two paths (Wi-Fi + SyFi)':''}`;
     if(NB.ms!=null){$('#nbms').value=NB.ms;} nbShow();
   }catch(e){$('#nbinfo').textContent='n/a: '+e.message;}
@@ -613,7 +639,7 @@ function drawUND(){
   mins.forEach((s,i)=>{let y=mh;s.forEach((v,ci)=>{if(!v)return;const hh=v/mm*(mh-4);x.fillStyle=UCOL[ci%UCOL.length];x.fillRect(i*mw+.5,y-hh,Math.max(1,mw-1),hh);y-=hh;});});
   x.fillStyle=css('--muted');x.font='10px system-ui';[0,15,30,45].forEach(m=>x.fillText(':'+String(m).padStart(2,'0'),m*mw+1,h-2));
   const top=mins.map((s,i)=>[s.reduce((a,b)=>a+b,0),i]).sort((a,b)=>b[0]-a[0])[0];
-  $('#undleg').innerHTML=cells.map((c,ci)=>`<span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${UCOL[ci%UCOL.length]};margin-right:5px"></span>${c.name||'Cell '+short(c.serial)} · ${c.events.filter(e=>e.t>=t0).length}${c.role==='primary'?' (sender)':''}</span>`).join('')
+  $('#undleg').innerHTML=cells.map((c,ci)=>`<span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${UCOL[ci%UCOL.length]};margin-right:5px"></span>${c.name?esc(c.name):'Cell '+short(c.serial)} · ${c.events.filter(e=>e.t>=t0).length}${c.role==='primary'?' (sender)':''}</span>`).join('')
     +(top&&top[0]>=3?`<span style="flex-basis:100%">Most at <b>:${String(top[1]).padStart(2,'0')}</b> past the hour (${top[0]} of ${cells.reduce((a,c)=>a+c.events.filter(e=>e.t>=t0).length,0)})</span>`:'');
 }
 async function loadUND(h){UNDH=h||UNDH;$('#und24').classList.toggle('pri',UNDH===24);$('#und7').classList.toggle('pri',UNDH!==24);
@@ -621,7 +647,32 @@ async function loadUND(h){UNDH=h||UNDH;$('#und24').classList.toggle('pri',UNDH==
 $('#und24').onclick=()=>loadUND(24); $('#und7').onclick=()=>loadUND(168);
 $('#strefresh').onclick=()=>{loadNB();loadUND();};
 window.addEventListener('resize',()=>drawUND());
-async function refreshAll(){await loadMe();loadWifi();loadRoom();loadDiscover();loadHK();loadRing();loadFw();loadNB();loadUND(24);}
+// ---- AirPlay & Atmos ----
+let AP=null;
+async function loadAP(){
+  try{AP=await api('/api/airplay');
+    const cs=AP.cells.filter(c=>!c.error||c.settings);
+    const me=cs.find(c=>c.active)||cs[0]||{};
+    const playing=cs.filter(c=>c.active);
+    $('#apnow').innerHTML=playing.length?playing.map(c=>`<b>${esc(c.format)||'—'}</b> · ${c.channels} ch${c.badge&&c.format&&c.badge!==c.format?` <span class=muted>(Syng's badge: ${esc(c.badge)})</span>`:''} on ${c.name?esc(c.name):short(c.serial)}`).join('<br>'):'Nothing is playing over AirPlay right now';
+    const st=(me.settings||{}); $('#apfill').checked=!!st.fill; $('#apquick').checked=!!st.quick_recover; $('#apsilence').checked=st.silence_fix!==false;
+    const sl=cs.reduce((a,c)=>{const x=c.silence||{};a.r+=x.recovered||0;a.f+=x.failed||0;(x.events||[]).forEach(e=>{if(e.kind==='stuck'&&(!a.t||e.t>a.t))a.t=e.t;});return a;},{r:0,f:0,t:0});
+    $('#apsil').textContent=(sl.r||sl.f)?`unstuck ${sl.r}×${sl.f?', '+sl.f+' not':''}${sl.t?' · last '+new Date(sl.t*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}):''}`:'nothing to unstick yet';
+    $('#aphp').textContent=AP.height_processing==null?'':(AP.height_processing?'· height processing on (set by Syng)':'· height processing off (set by Syng: no speaker is up high)');
+    const HL=AP.height_layers||{}, names={}; cs.forEach(c=>{if(c.serial)names[c.serial]=c.name||'Cell '+short(c.serial);});
+    $('#aplayers').innerHTML=Object.keys(HL).map(s=>`<label class="rowb sw" style="margin:0"><span>${names[s]?esc(names[s]):'Cell '+short(s)}</span>
+      <select data-hl="${s}"><option value=0 ${HL[s]==0?'selected':''}>Floor / shelf</option><option value=1 ${HL[s]==1?'selected':''}>Up high</option><option value=2 ${HL[s]==2?'selected':''}>Ceiling</option></select></label>`).join('');
+    document.querySelectorAll('[data-hl]').forEach(el=>el.onchange=async()=>{const b={cells:{}};b.cells[el.dataset.hl]={height_layer:+el.value};
+      try{await api('/api/room/layout',b,AP.primary_ip||primaryIp);toast('Height layer saved');setTimeout(loadAP,2500);}catch(e){toast(e.message,true);loadAP();}});
+    $('#apcells').innerHTML=cs.map(c=>`${c.name?esc(c.name):short(c.serial)}${c.role?' ('+esc(c.role)+')':''}: `+(c.height==null?'AirPlay runs on the primary':`height processing ${c.height?'on':'off'} · fill ${c.fill?'on':'off'}`)+` · quick recovery ${c.quick_recover&&c.quick_recover.on?'on':'off'}`).join('<br>');
+  }catch(e){$('#apnow').textContent='n/a: '+e.message;}
+}
+async function apSet(k,v){try{const b={};b[k]=v;await api('/api/airplay',b);toast((k==='fill'?'Fill surround':k==='silence_fix'?'Unstick silent track changes':'Quick recovery')+(v?' on':' off')+' — every speaker');setTimeout(loadAP,1500);}catch(e){toast(e.message,true);loadAP();}}
+$('#apsilence').onchange=e=>apSet('silence_fix',e.target.checked);
+$('#apfill').onchange=e=>apSet('fill',e.target.checked);
+$('#apquick').onchange=e=>apSet('quick_recover',e.target.checked);
+$('#aprefresh').onclick=loadAP;
+async function refreshAll(){await loadMe();loadWifi();loadRoom();loadDiscover();loadHK();loadRing();loadFw();loadNB();loadUND(24);loadAP();}
 window.addEventListener('resize',sizeCanvas);
 refreshAll();
 </script></body></html>

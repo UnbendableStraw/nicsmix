@@ -38,7 +38,7 @@ next, so the tooling does it reproducibly:
 
 ```sh
 brew install e2fsprogs xz          # macOS (debugfs); Linux: apt install e2fsprogs xz-utils
-export ROOT_PASSWORD='something-else'              # default SyngCell.dev
+export ROOT_PASSWORD='something-else'              # optional; omit for key-only (uses SSH_PUBKEY) or an auto-generated one (§1.9)
 export SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)"   # optional, default ~/.ssh/id_ed25519.pub
 tools/fw/build-troubadour.sh "path/to/stock-2.2.2/image.sdcard.lzma" build-2.2.2
 cd build-2.2.2 && ./flash.sh      # uuu, Cell in USB serial-download mode

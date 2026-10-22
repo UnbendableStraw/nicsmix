@@ -19,8 +19,17 @@ class Agent(val ip: String) {
     companion object {
         val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(4, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
         private val JSON = "application/json".toMediaType()
+        /** Optional per-cell API token (agent §1.6). Empty by default; set by the user in Settings.
+         *  Set once at startup from the stored preference; sent as X-Troubadour-Token on every request. */
+        @Volatile var apiToken: String = ""
     }
     class HttpError(val code: Int, msg: String) : Exception("HTTP $code: $msg")
+
+    private fun Request.Builder.authed(): Request.Builder {
+        val t = apiToken
+        if (t.isNotEmpty()) header("X-Troubadour-Token", t)
+        return this
+    }
 
     private fun decode(code: Int, body: String?): JSONObject {
         val o = try { JSONObject(body ?: "") } catch (_: Exception) { null }
@@ -31,12 +40,12 @@ class Agent(val ip: String) {
     }
     suspend fun get(path: String, timeoutSec: Long = 8, connectSec: Long = 4): JSONObject = withContext(Dispatchers.IO) {
         val c = http.newBuilder().connectTimeout(connectSec, TimeUnit.SECONDS).readTimeout(timeoutSec, TimeUnit.SECONDS).build()
-        c.newCall(Request.Builder().url(base + path).build()).execute().use { decode(it.code, it.body?.string()) }
+        c.newCall(Request.Builder().url(base + path).authed().build()).execute().use { decode(it.code, it.body?.string()) }
     }
     suspend fun post(path: String, body: Map<String, Any?> = emptyMap(), timeoutSec: Long = 12): JSONObject = withContext(Dispatchers.IO) {
         val c = http.newBuilder().readTimeout(timeoutSec, TimeUnit.SECONDS).build()
         val rb = JSONObject(body).toString().toRequestBody(JSON)
-        c.newCall(Request.Builder().url(base + path).post(rb).build()).execute().use { decode(it.code, it.body?.string()) }
+        c.newCall(Request.Builder().url(base + path).authed().post(rb).build()).execute().use { decode(it.code, it.body?.string()) }
     }
     /** Firmware image upload from a content:// stream (the setup page does this too; here for the native button). */
     suspend fun upload(path: String, name: String, length: Long, open: () -> InputStream): JSONObject = withContext(Dispatchers.IO) {
@@ -46,7 +55,7 @@ class Agent(val ip: String) {
             override fun writeTo(sink: BufferedSink) { open().source().use { sink.writeAll(it) } }
         }
         val c = http.newBuilder().readTimeout(30, TimeUnit.MINUTES).writeTimeout(30, TimeUnit.MINUTES).build()
-        c.newCall(Request.Builder().url(base + path).header("X-Filename", java.net.URLEncoder.encode(name, "UTF-8")).post(rb).build()).execute().use { decode(it.code, it.body?.string()) }
+        c.newCall(Request.Builder().url(base + path).authed().header("X-Filename", java.net.URLEncoder.encode(name, "UTF-8")).post(rb).build()).execute().use { decode(it.code, it.body?.string()) }
     }
 }
 
@@ -77,11 +86,14 @@ data class Room(val id: String, val name: String, val primaryIp: String?, val ce
     }
 }
 
-data class Source(val id: String, val active: Boolean, val playing: Boolean, val title: String, val artist: String, val album: String, val volume: Double, val hasArtwork: Boolean, val mute: Boolean) {
+data class Source(val id: String, val active: Boolean, val playing: Boolean, val title: String, val artist: String, val album: String, val volume: Double, val hasArtwork: Boolean, val mute: Boolean,
+                  /** What the source really produces ("Dolby Atmos 7.1.4"); null when idle — Syng's own badge can't be trusted. */
+                  val format: String? = null) {
     val displayName get() = when (id) { "airplay2" -> "AirPlay"; "spotify" -> "Spotify"; "tidal" -> "TIDAL"; "hdmi" -> "HDMI"; else -> id.replaceFirstChar { it.uppercase() } }
     companion object {
         fun from(id: String, o: JSONObject) = Source(id, o.optBoolean("active"), o.optBoolean("playing"), o.optString("title", ""), o.optString("artist", ""), o.optString("album", ""),
-            o.optDouble("volume", 0.0).let { if (it.isNaN()) 0.0 else it }, o.optBoolean("artwork", false), o.optBoolean("mute", false))
+            o.optDouble("volume", 0.0).let { if (it.isNaN()) 0.0 else it }, o.optBoolean("artwork", false), o.optBoolean("mute", false),
+            o.optString("format").takeIf { it.isNotEmpty() && !o.isNull("format") })
         fun isMusic(id: String) = !id.startsWith("Calibration") && id != "saplayer" && !id.startsWith("file")
     }
 }

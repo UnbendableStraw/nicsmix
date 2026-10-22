@@ -44,7 +44,7 @@ U‑Boot env after flash pins `mmcroot=/dev/mmcblk2p2` → it always boots **slo
 The kernel already ships every common dongle driver as a module and udev autoloads them by USB modalias. Both USB controllers are `dr_mode = otg` (host role works — the stock USB‑audio input uses host mode), so a dongle on the OTG port enumerates. Changes:
 
 - **`/etc/modules-load.d/usb-ethernet.conf`** — pre‑loads `usbnet asix ax88179_178a cdc_ether cdc_ncm r8152 smsc95xx` (covers ASIX AX887xx/AX88179, Realtek RTL8152/8153, SMSC95xx, CDC‑ECM/NCM). A hot‑plugged adapter is recognized immediately.
-- **`/etc/connman/main.conf`** — technology order stays **stock (`wifi,ethernet`)**; only `usb` is added to the interface blacklist (the agent owns the USB gadget link). Earlier builds flipped it to `ethernet,wifi`; that was a mistake: celldirector decides "Wi-Fi connected" from the Wi-Fi *service* being connman's online (default-route) service, so with a wired adapter owning the route it logged `Entering WiFi repair mode after being disconnected for at least 20 s`, set its phase to `wifiRepair` and kept scanning (observed on a fresh 2.2.2 cell, b39). A wired adapter still gets DHCP and the agent answers on it; it just isn't the default route while Wi-Fi is up. A **wired-only** cell (no Wi-Fi at all) ends up in the same repair mode — rooms need Wi-Fi until the wired-room work on the roadmap.
+- **`/etc/connman/main.conf`** — technology order stays **stock (`wifi,ethernet`)**; only `usb` is added to the interface blacklist (the agent owns the USB gadget link). Earlier builds flipped it to `ethernet,wifi`; that was a mistake: celldirector decides "Wi-Fi connected" from the Wi-Fi *service* being connman's online (default-route) service, so with a wired adapter owning the route it logged `Entering WiFi repair mode after being disconnected for at least 20 s`, set its phase to `wifiRepair` and kept scanning (observed on a fresh 2.2.2 cell, b39). A wired adapter still gets DHCP and the agent answers on it; it just isn't the default route while Wi-Fi is up. A **wired-only** cell (Wi-Fi radio off) is now **solved for standalone cells** — see `docs/WIRED-ONLY.md`. celldirector is patched so it no longer force-powers Wi-Fi / autoconnects / arms the repair timer, plus a boot service (`troubadour-pin-primary`) claims the primary role so airplay2source doesn't hang waiting for a role the mesh never assigns. Reboot-proven on `.39`. Multi-cell wired rooms still need role negotiation over the wire.
 - **`/etc/systemd/network/80-wired.network`** — overrides the stock file to mark `en*/eth*` **`Unmanaged=yes`** in systemd‑networkd, so ConnMan is the single owner of the wired link (no DHCP race).
 
 **Using it:** plug a supported USB‑Ethernet dongle into the Cell's USB‑C port (use an OTG/host adapter if needed). It should get DHCP and become the default route within a few seconds. Check over SSH:
@@ -61,14 +61,14 @@ echo host > /sys/bus/platform/devices/32e40000.usb/role   # or 32e50000.usb
 ### B. SSH
 `sshd` (OpenSSH) is already on the image and `sshd.socket` is socket‑activated on port 22; it was only gated by auth + the dev `sshd_config`. Changes (applied to both rootfs slots):
 
-- **`/etc/ssh/sshd_config`** — replaced with Syng's own `devel` config and set: `PermitRootLogin yes`, `PasswordAuthentication yes`, `PubkeyAuthentication yes`, `PermitEmptyPasswords no`, and `AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u`.
-- **`/etc/shadow`** — root password set to **`SyngCell.dev`** (SHA‑512). *Change it on first login.*
+- **`/etc/ssh/sshd_config`** — replaced with Syng's own `devel` config and set: `PubkeyAuthentication yes`, `PermitEmptyPasswords no`, `AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u`, plus `PermitRootLogin`/`PasswordAuthentication` per the auth posture (key-only → `prohibit-password`/`no`; password build → `yes`).
+- **`/etc/shadow`** — §1.9: key-only build locks the root password (`!`); a password build uses `ROOT_PASSWORD` or a random one the build prints once. No shared default is baked in.
 - **`/etc/ssh/authorized_keys.d/root`** — drop your public key here (before flashing, in `overlay/`, or after login) for key‑based access.
 - **OTA masked** — `otamanager.service → /dev/null` so a cloud update can't silently revert these mods or re‑lock the device. Re‑enable with `rm /etc/systemd/system/otamanager.service` (or `systemctl unmask otamanager`).
 
 **First login:**
 ```sh
-ssh root@<cell-ip>        # password: SyngCell.dev
+ssh root@<cell-ip>        # key-only, or the password the build printed / you set
 passwd                    # change it
 # add your key:
 mkdir -p ~/.ssh && printf '%s\n' 'ssh-ed25519 AAAA... you' >> /etc/ssh/authorized_keys.d/root
@@ -160,4 +160,4 @@ firmware/manifest-2.2.1.json, firmware/2.2.2/manifest.json   stock manifests, fo
 overlay/                       the individual files the mod adds (what the build script stamps in)
 ```
 
-**Default credential:** `root` / `SyngCell.dev` — change it immediately.
+**Credential:** `root` via your SSH key (key-only builds), or the password the build printed / you set (§1.9). There is no shared default password.

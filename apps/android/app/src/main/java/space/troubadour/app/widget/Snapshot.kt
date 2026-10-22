@@ -23,7 +23,7 @@ data class Speaker(val x: Double, val y: Double, val primary: Boolean)
 data class Snapshot(
     val room: String = "Troubadour", val field: FieldState = FieldState(), val speakers: List<Speaker> = emptyList(),
     val listenerX: Double = 0.0, val listenerY: Double = 0.0, val ledMode: String? = null,
-    val ledModes: List<String> = listOf("pulse", "party", "flow", "groove", "bloom", "shimmer", "spectrum", "vu", "beat"), val playing: String? = null, val reachable: Boolean = false
+    val ledModes: List<String> = listOf("pulse", "party", "flow", "groove", "bloom", "shimmer", "spectrum", "vu", "beat", "room"), val playing: String? = null, val reachable: Boolean = false
 ) {
     companion object {
         fun agentIp(ctx: Context): String? = ctx.getSharedPreferences("fleet", Context.MODE_PRIVATE).getString("lastAgent", null)

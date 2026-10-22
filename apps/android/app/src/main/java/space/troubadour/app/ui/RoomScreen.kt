@@ -9,6 +9,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -137,7 +138,11 @@ fun RoomMain(room: Room) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                         Box(Modifier.size(6.dp).clip(RoundedCornerShape(3.dp)).background(if (live) Theme.live else Theme.muted.copy(alpha = .4f)))
                         Text(listOf(act?.artist, act?.album).filter { !it.isNullOrEmpty() }.joinToString(" · ").ifEmpty { "drag the puck to move the sound" },
-                            color = Theme.muted, fontSize = 12.sp, maxLines = 1)
+                            color = Theme.muted, fontSize = 12.sp, maxLines = 1, modifier = Modifier.weight(1f, fill = false))
+                        act?.format?.takeIf { it.startsWith("Dolby Atmos") || it.startsWith("Surround") }?.let { f ->
+                            Text(f.replace("Dolby Atmos", "ATMOS").replace("Surround ", ""), fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+                                modifier = Modifier.border(1.dp, Theme.muted.copy(alpha = .6f), RoundedCornerShape(50)).padding(horizontal = 6.dp, vertical = 1.dp))
+                        }
                     }
                 }
                 Column(horizontalAlignment = Alignment.End) {

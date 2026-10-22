@@ -1,0 +1,41 @@
+#!/bin/sh
+# troubadour-autoprimary: elect the cell holding the ethernet carrier as the
+# wired primary. Watches eth0 carrier; on a *stable change* pins/unpins the
+# celldirector role and moves the infra network between eth0 and wifi.
+# Cold boot only records the baseline -- it never pokes celldirector unless
+# the carrier actually transitions (claim on ->1, step down only on 1->0).
+CAR=/sys/class/net/eth0/carrier
+IFACE=com.syng.Cell.CoreServices
+cd_call(){ busctl --system call com.syng.CellServer /com/syng/localcell "$IFACE" "$1" >/dev/null 2>&1; }
+wifisvc(){ connmanctl services 2>/dev/null | awk '/managed_psk/{print $NF; exit}'; }
+ethip(){ ip -4 addr show eth0 2>/dev/null | awk '/inet /{print $2; exit}'; }
+go_wired(){
+  cd_call PinPrimary
+  W=$(wifisvc)
+  if [ -n "$W" ] && [ -n "$(ethip)" ]; then
+    connmanctl config "$W" autoconnect no >/dev/null 2>&1
+    connmanctl disconnect "$W" >/dev/null 2>&1
+  fi
+  logger -t autoprimary "carrier UP -> PinPrimary; infra on eth0 ($(ethip))"
+}
+go_wifi(){
+  cd_call UnpinRole
+  W=$(wifisvc)
+  [ -n "$W" ] && { connmanctl config "$W" autoconnect yes >/dev/null 2>&1; connmanctl connect "$W" >/dev/null 2>&1; }
+  logger -t autoprimary "carrier DOWN -> UnpinRole; rejoined wifi"
+}
+car(){ cat "$CAR" 2>/dev/null || echo 0; }
+last=""; pend=""; stable=0
+while :; do
+  c=$(car)
+  if [ "$c" = "$pend" ]; then stable=$((stable+1)); else pend="$c"; stable=1; fi
+  if [ "$stable" -ge 2 ] && [ "$c" != "$last" ]; then
+    if [ "$c" = "1" ]; then
+      go_wired                 # cold-boot wired, or 0->1: (re)claim wired primary (PinPrimary idempotent)
+    elif [ "$last" = "1" ]; then
+      go_wifi                  # 1->0 only: step down, rejoin wifi
+    fi                         # cold-boot carrier=0 (last=="") just records baseline -> no churn
+    last="$c"
+  fi
+  sleep 3
+done

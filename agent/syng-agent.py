@@ -25,7 +25,7 @@ VIZ_OBJ = "/com/syng/AudioSource/VisualizationDataBroadcast"
 VIZ_IF = "com.syng.AudioSource.VisualizationDataBroadcast"
 VIZ_LED_PORT = int(os.environ.get("VIZ_LED_PORT", "7249"))
 VIZ_WEB_PORT = int(os.environ.get("VIZ_WEB_PORT", "7250"))
-import urllib.request, urllib.parse, threading, socket, struct, math, hashlib
+import urllib.request, urllib.parse, threading, socket, struct, math, hashlib, hmac
 
 def log(msg):
     try: sys.stderr.write("[%s] %s\n" % (time.strftime("%H:%M:%S"), msg)); sys.stderr.flush()
@@ -41,11 +41,14 @@ def peer_ips():
 def fanout(path, body):
     """Replicate a control action to every other cell in the room (needs the agent on them)."""
     data = json.dumps(dict(body, _local=True)).encode()
+    hdrs = {"Content-Type": "application/json"}
+    tok = api_token()
+    if tok: hdrs["X-Troubadour-Token"] = tok      # §1.6: carry the shared token to peers when one is set
     for ip in peer_ips():
         try:
             urllib.request.urlopen(urllib.request.Request(
                 "http://%s:%d%s" % (ip, PORT, path), data=data,
-                headers={"Content-Type": "application/json"}, method="POST"), timeout=2)
+                headers=hdrs, method="POST"), timeout=2)
         except Exception: pass
 
 # ---------- viz feed fan-out (VisualizationDataBroadcast -> all cells) ----------
@@ -162,13 +165,43 @@ def _mpd(b, i=0):
         return a, i
     return None, i
 
+_STEM_NAMES = {"t": 0.0, "n": 0, "sid": None, "names": []}
+def stem_names(n, sid):
+    """Names for the n per-stem levels in a viz packet. The upmixer's stems for a stereo source are L, R and the
+    extracted centre; a multichannel source's stems follow its channel layout ("L R C Lfe Lss Rss Tfl ...") when
+    the counts agree. Cached: this runs on every packet (~30/s)."""
+    if n == _STEM_NAMES["n"] and sid == _STEM_NAMES["sid"] and time.time() - _STEM_NAMES["t"] < 10:
+        return _STEM_NAMES["names"]
+    names = None
+    try:
+        if n > 3 and sid:
+            dest, path, rt = source_target(str(sid))
+            lay = str((get_all(dest, path, ASRC_IF) or {}).get("channelLayout") or "")
+            toks = [t for t in lay.replace(",", " ").split() if t]
+            if len(toks) == n: names = toks
+    except Exception:
+        names = None
+    if names is None:
+        names = {0: [], 1: ["C"], 2: ["L", "R"], 3: ["L", "R", "C"]}.get(n) or (["L", "R", "C"] + ["S%d" % i for i in range(n - 3)])
+    _STEM_NAMES.update({"t": time.time(), "n": n, "sid": sid, "names": names})
+    return names
+
 def _db_norm(centi, lo=-56.0, hi=-6.0):
     db = centi / 100.0
     return max(0.0, min(1.0, (db - lo) / (hi - lo)))
 
 VIZ_COND = threading.Condition()
 VIZ_SEQ = [0]
+VIZ_RING = []          # b75: the last ~1 s of frames, so a stream that fell behind sends every frame, not just the newest
 _vz = {"peak": -40.0, "ema": None, "pk": None, "beat": 0.0, "e": 0.0, "b": 0.0, "fps": 30.0, "last": 0.0}
+
+def _thread_nice(n):
+    """Per-thread nice on Linux (threads are tasks): lets the kernel prefer the HTTP control threads over the
+    always-busy viz feed thread. Python 3.7 has no get_native_id(), so read /proc/thread-self."""
+    try:
+        tid = int(os.readlink("/proc/thread-self").rsplit("/", 1)[1])
+        os.setpriority(os.PRIO_PROCESS, tid, n)
+    except Exception: pass
 
 def viz_web_loop():
     """Receive the cell's VisualizationDataBroadcast (msgpack over UDP, 88 dB bins) and turn it
@@ -182,10 +215,27 @@ def viz_web_loop():
     except Exception as e:
         log("VIZ web bind failed: %s" % e); return
     relay = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # b75: stamp each packet with the kernel's receive time, not the moment this (niced, GIL-sharing) thread got to
+    # it. The packets arrive at an even 30.4/s, but processing lagged by up to ~0.5 s under load and the frames went
+    # out stamped in clumps; the apps play frames out by `t`, so an honest stamp is what keeps their band ring even.
+    SO_TSNS = getattr(socket, "SO_TIMESTAMPNS", 35)
+    try: s.setsockopt(socket.SOL_SOCKET, SO_TSNS, 1); kstamp = True
+    except Exception: kstamp = False
     B = 24
+    # b75: was +10. The process runs at −8 and the audio daemons at −20, so a +10 thread on a busy primary waited
+    # 0.3–0.9 s for a core and the frames came out in clumps (the apps' band ring stuttered). −4 still yields to the
+    # agent's own control threads; the work is ~30 small packets a second.
+    _thread_nice(-4)
     while True:
         try:
-            data, _ = s.recvfrom(65535)
+            kt = None
+            if kstamp:
+                data, anc, _f, _a = s.recvmsg(65535, 64)
+                for lvl, typ, cd in anc:
+                    if lvl == socket.SOL_SOCKET and typ == SO_TSNS and len(cd) >= 16:
+                        sec, ns = struct.unpack("qq", cd[:16]); kt = sec + ns * 1e-9
+            else:
+                data, _ = s.recvfrom(65535)
             try: relay.sendto(data, ("127.0.0.1", VIZ_LED_PORT))   # feed the local LED daemon
             except Exception: pass
             _vz["n"] = _vz.get("n", 0) + 1
@@ -201,6 +251,7 @@ def viz_web_loop():
             n = len(spec)
             if not n: continue
             now = time.time()
+            if kt is not None and 0.0 <= now - kt < 2.0: now = kt
             if _vz["last"]:
                 dt = now - _vz["last"]
                 if 0.005 < dt < 0.5: _vz["fps"] += 0.1 * (1.0 / dt - _vz["fps"])
@@ -229,10 +280,18 @@ def viz_web_loop():
             for k in range(B):
                 a = int(k * step); b2 = max(a + 1, int((k + 1) * step))
                 sp.append(round(sum(level[a:b2]) / (b2 - a), 3)); fx.append(round(max(flux[a:b2]), 3))
+            # b68: the per-stem levels the Syng app's own field rides on. Its "pulse" texture is not a spectrogram:
+            # every row is the loudness of each upmixer stem (L / R / C, more for multichannel), laid out around the
+            # arc (SyngSpace PulseData: L at one end, R at the other, C in the middle, the rest spread between), so the
+            # glitter is pushed by *which channel* is loud, not which frequency. The app maps (dB + 50) / 50 -> 0..1.
+            rmsdb = [round(x / 100.0, 1) for x in rms] if rms else []
             with VIZ_COND:
                 VIZ_SEQ[0] += 1
-                LAST_VIZ.update({"energy": round(_vz["e"], 3), "bass": round(_vz["b"], 3), "beat": round(_vz["beat"], 3),
-                                 "spec": sp, "flux": fx, "fps": round(_vz["fps"], 1), "src": obj.get("sourceId"), "t": now, "seq": VIZ_SEQ[0]})
+                LAST_VIZ.update({"energy": round(_vz["e"], 3), "bass": round(_vz["b"], 3), "beat": round(_vz["beat"], 3), "rms_db": round(rms_db, 1),
+                                 "spec": sp, "flux": fx, "fps": round(_vz["fps"], 1), "src": obj.get("sourceId"), "t": now, "seq": VIZ_SEQ[0],
+                                 "rms": rmsdb, "stems": stem_names(len(rmsdb), obj.get("sourceId"))})
+                VIZ_RING.append(dict(LAST_VIZ))
+                if len(VIZ_RING) > 32: del VIZ_RING[:len(VIZ_RING) - 32]
                 VIZ_COND.notify_all()
         except Exception:
             time.sleep(0.05)
@@ -947,7 +1006,8 @@ def live_sources():
                     "artwork": bool(art.get("artworkUrl")), "mixType": base.get("mixType"), "mediaType": base.get("mediaType"),
                     "badging": base.get("badgingType"), "layout": base.get("channelLayout"), "state": base.get("state"),
                     "mute": base.get("mute"), "height": base.get("enableHeightProcessing"),
-                    "beyond": base.get("enableBeyondStereoDuplication")}
+                    "beyond": base.get("enableBeyondStereoDuplication"),
+                    "format": format_label(base.get("channelLayout")) if rt.get("active") else None}
     return out
 
 def cell_summary(c, me):
@@ -958,7 +1018,8 @@ def cell_summary(c, me):
     return {"serial": c.get("serial_number"), "name": c.get("display_name"), "role": c.get("role"), "ip": c.get("ip_address"),
             "online": str(c.get("online")).lower() == "true", "calibrated": c.get("calibrated"),
             "model": c.get("model"), "position": c.get("position") or {},
-            "activeSource": act(c), "isMe": c.get("serial_number") == me}
+            "activeSource": act(c), "isMe": c.get("serial_number") == me,
+            "wired_ip": (wired_addr()[1] if c.get("serial_number") == me else (c.get("wired_ip") or wired_known(c.get("ip_address"))))}
 
 def get_state():
     s = call("com.syng.cloudsyncd", "/com/syng/StateFetcher", "com.syng.StateFetcher", "GetState")
@@ -1089,7 +1150,8 @@ def stats():
 # ---------- LED (com.syng.Led D-Bus) + reactive service + vision files ----------
 LED_SVC = "com.syng.Led"; LED_OBJ = "/com/syng/ledmanager"; LED_IF = "com.syng.Led"
 VIS = "/usr/lib/syng/visions"
-REACTIVE_MODES = ["pulse", "party", "flow", "groove", "bloom", "shimmer", "spectrum", "vu", "beat"]
+REACTIVE_MODES = ["pulse", "party", "flow", "groove", "bloom", "shimmer", "spectrum", "vu", "beat", "room"]
+MIC_MODES = {"room"}          # these listen to the room through the Cell's mics; every other mode follows the viz feed
 
 def bus_has(name):
     try:
@@ -1124,14 +1186,31 @@ def led_status():
                 palette = av("--palette") or palette
                 source = av("--source") or source
                 tune = {"beatSens": av("--beat-sens"), "floor": av("--floor"), "cycle": av("--cycle"),
-                        "silentFade": av("--silent-fade"), "beatFade": av("--beat-fade")}
+                        "silentFade": av("--silent-fade"), "beatFade": av("--beat-fade"), "idle": av("--idle")}
     except Exception: pass
     return {"reactive": reactive, "mode": mode, "palette": palette, "source": source, "tune": tune,
             "color": led_live_color(3.0), "ledmanager": bus_has(LED_SVC), "visions": visions(), "reactiveModes": REACTIVE_MODES}
 
+_LED_NUM_FLAGS = {"--beat-sens", "--floor", "--cycle", "--silent-fade", "--beat-fade", "--idle"}
+def _led_check(pairs):
+    """§1.13: validate before anything reaches the ARGS line. A value with a space or shell metachar used
+    to produce an ARGS= line argparse rejects, and syng-led-reactive is Restart=always — a crash loop."""
+    out = []
+    for flag, value in pairs:
+        v = str(value)
+        if flag in _LED_NUM_FLAGS:
+            try: v = repr(float(v))                       # numeric flags must be numbers
+            except ValueError: raise RuntimeError("bad LED value for %s: %r" % (flag, value))
+        elif not re.match(r"^[A-Za-z0-9_.:+-]+$", v):
+            raise RuntimeError("bad LED value for %s: %r" % (flag, value))
+        out.append((flag, v))
+    return out
+
 def set_led_flags(pairs):
     """Add/replace each `flag value` in /etc/default/syng-led-reactive ARGS, restart once."""
+    pairs = _led_check(pairs)
     path = "/etc/default/syng-led-reactive"
+    q = shlex.quote
     try:
         lines, found = [], False
         for ln in open(path):
@@ -1140,14 +1219,14 @@ def set_led_flags(pairs):
                 for flag, value in pairs:
                     if flag in args: args[args.index(flag) + 1] = value
                     else: args += [flag, value]
-                lines.append("ARGS=" + " ".join(args) + "\n"); found = True
+                lines.append("ARGS=" + " ".join(q(a) for a in args) + "\n"); found = True
             else: lines.append(ln)
         if not found:
-            base = "--mode flow --source viz " + " ".join("%s %s" % (f, v) for f, v in pairs)
+            base = "--mode flow --source viz " + " ".join("%s %s" % (f, q(v)) for f, v in pairs)
             lines.append("ARGS=" + base + "\n")
         open(path, "w").writelines(lines)
     except Exception:
-        base = "--mode flow --source viz " + " ".join("%s %s" % (f, v) for f, v in pairs)
+        base = "--mode flow --source viz " + " ".join("%s %s" % (f, q(v)) for f, v in pairs)
         open(path, "w").write("ARGS=" + base + "\n")
     sysctl("restart", "syng-led-reactive")
 
@@ -1177,7 +1256,10 @@ def led_color(r, g, b, w):
 
 def led_anim(action, name=None):
     ensure_manual()
-    if action == "play": led_dbus("PlayAnimation", dbus.String(VIS + "/" + name + ".json"))
+    if action == "play":
+        safe = os.path.basename(str(name or ""))           # §1.13: no path traversal out of the visions dir
+        if not re.match(r"^[A-Za-z0-9_.-]+$", safe): raise RuntimeError("bad animation name")
+        led_dbus("PlayAnimation", dbus.String(os.path.join(VIS, safe + ".json")))
     elif action == "pause": led_dbus("PauseAnimation")
     elif action == "resume": led_dbus("ResumeAnimation")
     elif action == "clear": led_dbus("ClearAnimationQueue")
@@ -1185,19 +1267,25 @@ def led_anim(action, name=None):
 def set_reactive(mode):
     if mode in (None, "", "off", "manual"):
         sysctl("stop", "syng-led-reactive"); sysctl("start", "ledmanager"); return
+    if mode not in REACTIVE_MODES:                        # §1.13: reject anything not a known mode (crash-loop guard)
+        raise RuntimeError("unknown reactive mode: %r" % mode)
+    q = shlex.quote
+    src = "mic" if mode in MIC_MODES else "viz"           # room = the mics; the rest = what the speaker plays
+    def put(args, flag, val):
+        if flag in args: args[args.index(flag) + 1] = val
+        else: args += [flag, val]
     try:
         lines, found = [], False
         for ln in open("/etc/default/syng-led-reactive"):
             if ln.startswith("ARGS="):
                 args = shlex.split(ln.split("=", 1)[1])
-                if "--mode" in args: args[args.index("--mode") + 1] = mode
-                else: args = ["--mode", mode] + args
-                lines.append("ARGS=" + " ".join(args) + "\n"); found = True
+                put(args, "--mode", mode); put(args, "--source", src)
+                lines.append("ARGS=" + " ".join(q(a) for a in args) + "\n"); found = True
             else: lines.append(ln)
-        if not found: lines.append("ARGS=--mode %s\n" % mode)
+        if not found: lines.append("ARGS=--mode %s --source %s\n" % (q(mode), src))
         open("/etc/default/syng-led-reactive", "w").writelines(lines)
     except Exception:
-        open("/etc/default/syng-led-reactive", "w").write("ARGS=--mode %s --source viz\n" % mode)
+        open("/etc/default/syng-led-reactive", "w").write("ARGS=--mode %s --source %s\n" % (q(mode), src))
     sysctl("restart", "syng-led-reactive")
 
 def vision_read(name):
@@ -1218,7 +1306,7 @@ def vision_write(name, content):
 # ====================================================================================
 import socket, struct, random, ipaddress, math, re, threading, subprocess, urllib.request
 
-AGENT_BUILD = "b62"
+AGENT_BUILD = "b75"
 SSH_PUB = "/data/home/root/.ssh/id_ed25519.pub"
 HOST_PUB = "/data/ssh/ssh_host_ed25519_key.pub"
 CLOUD_STATE_FILE = "/data/syng/cloud_state.json"
@@ -1273,17 +1361,107 @@ def backup_state_once():
             try: open(LC_BACKUP, "w").write(json.dumps(st, indent=1))
             except Exception: pass
 
-def http_json(method, url, body=None, timeout=3.0):
+def http_json(method, url, body=None, timeout=3.0, token=False):
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if token:                                     # §1.6: only inter-agent calls carry the token
+        tok = api_token()
+        if tok: headers["X-Troubadour-Token"] = tok
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode() or "{}")
 
+# ---------- wired-first addressing (b74) ----------
+# A cell can be reached on its Wi-Fi address and, when it has a cable, on its wired one. The room document, mDNS
+# and Syng's own state only ever name the Wi-Fi address, so every call between agents (relays to the primary,
+# fan-outs, the setup page's relay) used to take the slower, jitterier path. _WIRED maps any address a cell is
+# known by to its wired address, learned from whoami replies and the room document; calls go wired first.
+_WIRED = {}                 # known address -> wired IPv4 on our LAN
+_WIRED_OK = {}              # wired IPv4 -> (checked at, reachable)
+_WIRED_PROBED = {}          # address -> when we last asked it for its whoami to learn its wired address
+_LAN_CACHE = {"t": 0.0, "nets": []}
+
+def _on_lan(ip):
+    now = time.time()
+    if now - _LAN_CACHE["t"] > 30:
+        try: _LAN_CACHE["nets"] = lan_subnets()
+        except Exception: _LAN_CACHE["nets"] = []
+        _LAN_CACHE["t"] = now
+    try:
+        a = ipaddress.ip_address(ip)
+        return any(a in n for n in _LAN_CACHE["nets"])
+    except Exception: return False
+
+def learn_wired(ip, wired, authoritative=True):
+    """Remember that the cell known by `ip` also answers on `wired` (only addresses on our own LAN). Only a cell's
+    own whoami (authoritative) may also forget one: the room document often lacks it for the primary's entry."""
+    if ip and wired and ip != wired and _on_lan(wired):
+        _WIRED[ip] = wired
+    elif ip and not wired and authoritative:
+        _WIRED.pop(ip, None)
+
+def learn_wired_from(cells):
+    for c in cells or []:
+        if isinstance(c, dict):
+            learn_wired(c.get("ip_address") or c.get("ip"), c.get("wired_ip"), authoritative=False)
+
+def _wired_reachable(w):
+    """One short TCP connect per wired address every 30 s, so a pulled cable costs 0.4 s once, not every call."""
+    t, ok = _WIRED_OK.get(w, (0.0, False))
+    if time.time() - t < 30: return ok
+    try:
+        s_ = socket.create_connection((w, PORT), timeout=0.4); s_.close(); ok = True
+    except Exception: ok = False
+    _WIRED_OK[w] = (time.time(), ok)
+    return ok
+
+def wired_known(ip):
+    """The wired address learned for `ip` (no reachability check); an unknown address is asked for its whoami in
+    the background, at most every 2 minutes."""
+    if not ip: return None
+    w = _WIRED.get(ip)
+    if w is None:
+        now = time.time()
+        if now - _WIRED_PROBED.get(ip, 0) > 120 and _on_lan(ip):
+            _WIRED_PROBED[ip] = now
+            def probe():
+                try:
+                    r = http_json("GET", "http://%s:%d/api/whoami" % (ip, PORT), None, 3.0, token=True)
+                    learn_wired(r.get("ip") or ip, r.get("wired_ip")); learn_wired(ip, r.get("wired_ip"))
+                except Exception: pass
+            threading.Thread(target=probe, daemon=True).start()
+    return w
+
+def wired_of(ip):
+    """The wired address of the cell known by `ip`, when it has one we can reach from here; else None."""
+    w = wired_known(ip)
+    return w if w and _wired_reachable(w) else None
+
+def best_ip(ip):
+    return wired_of(ip) or ip
+
+def _agent_call(method, ip, path, body, timeout):
+    w = wired_of(ip)
+    if w:
+        try:
+            return http_json(method, "http://%s:%d%s" % (w, PORT, path), body, timeout, token=True)
+        except urllib.error.HTTPError:
+            raise                                   # the agent answered over the wire: a real error reply
+        except Exception:
+            # the wire failed to carry the request. A GET is safe to repeat over Wi-Fi; a POST that may have
+            # arrived is not, unless the connection was refused/unreachable outright (nothing was sent).
+            _WIRED_OK[w] = (time.time(), False)
+            if method == "POST":
+                import sys as _sys
+                e = _sys.exc_info()[1]
+                if isinstance(e, socket.timeout) or "timed out" in str(e): raise
+    return http_json(method, "http://%s:%d%s" % (ip, PORT, path), body, timeout, token=True)
+
 def agent_get(ip, path, timeout=3.0):
-    return http_json("GET", "http://%s:%d%s" % (ip, PORT, path), None, timeout)
+    return _agent_call("GET", ip, path, None, timeout)
 
 def agent_post(ip, path, body, timeout=6.0):
-    return http_json("POST", "http://%s:%d%s" % (ip, PORT, path), body, timeout)
+    return _agent_call("POST", ip, path, body, timeout)
 
 # ---------- identity ----------
 def iface_addrs():
@@ -1303,6 +1481,64 @@ def lan_ip():
             if ifn.startswith(pref) and not ifn.startswith(("usb", "wsyng")):
                 return ip
     return addrs[0][1] if addrs else None
+
+# ---------- HTTP origin / host / token guard (2026-10-20 review §1.6) ----------
+# The agent is root. These three checks stop a web page the user happens to have open from driving it
+# (no more wildcard CORS + an Origin check), stop DNS-rebinding (a Host check), and add an opt-in shared
+# token for direct LAN callers. Native apps and inter-cell calls send no Origin, so they are unaffected.
+_host_cache = {"t": 0.0, "v": None}
+def _cell_host_set():
+    """Cached 30 s: iface_addrs() spawns `ip addr`, which must not run per request (it cost ~20 ms each)."""
+    now = time.time()
+    if _host_cache["v"] is not None and now - _host_cache["t"] < 30: return _host_cache["v"]
+    hosts = {"localhost", "127.0.0.1", "::1"}
+    try:
+        h = socket.gethostname()
+        if h: hosts.add(h); hosts.add(h + ".local")
+    except Exception: pass
+    try:
+        for _ifn, ip, _pl in iface_addrs(): hosts.add(ip)
+    except Exception: pass
+    _host_cache.update({"t": now, "v": hosts}); return hosts
+
+def _hostname_of(value):
+    """Bare host from an Origin/Host header value (strip scheme, port, brackets)."""
+    v = (value or "").strip()
+    if "://" in v: v = v.split("://", 1)[1]
+    v = v.split("/", 1)[0]
+    if v.startswith("["): return v[1:v.index("]")] if "]" in v else v[1:]
+    return v.rsplit(":", 1)[0] if ":" in v else v
+
+_IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+def _origin_ok(headers):
+    """False only when a browser Origin names a site that is not this cell (drive-by / CSRF)."""
+    o = headers.get("Origin")
+    if not o or o == "null": return True          # native apps / inter-cell send none
+    return _hostname_of(o) in _cell_host_set()
+
+_PRIVATE_SUFFIXES = (".local", ".lan", ".home", ".home.arpa", ".internal", ".localdomain", ".intranet", ".private")
+def _host_ok(headers):
+    """DNS-rebinding guard: accept an IP literal, localhost, a single-label name, this cell's own names, or a
+    private-DNS suffix; refuse a public-looking FQDN (that is what a rebinding attacker has to use)."""
+    h = _hostname_of(headers.get("Host")).lower()
+    if not h or h == "localhost" or _IP_RE.match(h) or "." not in h: return True   # fast paths, no lookups
+    if h.endswith(_PRIVATE_SUFFIXES): return True
+    return h in _cell_host_set()
+
+def api_token():
+    t = SETTINGS.get("api_token")
+    return str(t) if t else None
+
+def _token_ok(handler):
+    """When an api_token is configured, writes from off-box must carry it. Loopback is exempt so the
+    local dashboard and on-box tools work without one; set the same token on every cell to use this."""
+    tok = api_token()
+    if not tok: return True
+    try: src = handler.client_address[0]
+    except Exception: src = ""
+    if src in ("127.0.0.1", "::1"): return True
+    want = handler.headers.get("X-Troubadour-Token")
+    return bool(want) and hmac.compare_digest(str(want), tok)
 
 def local_cell_props():
     try:
@@ -1489,7 +1725,10 @@ def _discover(timeout=1.2, only=None):
         r = rooms.setdefault(rid, {"room_id": rid, "room_name": c.get("room_name"), "cells": [], "primary_ip": None})
         if not r["room_name"] and c.get("room_name"): r["room_name"] = c["room_name"]
         r["cells"].append(c)
-        if (c.get("role") or "").lower() == "primary": r["primary_ip"] = ip
+        if (c.get("role") or "").lower() == "primary":
+            r["primary_ip"] = ip
+            r["primary_wired_ip"] = c.get("wired_ip") if c.get("wired_ip") and _on_lan(c.get("wired_ip")) else None
+        learn_wired(ip, c.get("wired_ip"))
     return {"me": me, "cells": sorted(results.values(), key=lambda c: (c.get("room_name") or "~", c.get("ip") or "")),
             "rooms": sorted(rooms.values(), key=lambda r: r["room_name"] or "~")}
 
@@ -1838,8 +2077,10 @@ def _fw_finalize(tmp, name, h, size, source):
 def fw_receive(stream, length, name, source):
     """Stream an image into /data/firmware with a running sha256 (browser upload or a pull from another cell)."""
     os.makedirs(FW_DIR, exist_ok=True)
+    with FW_LOCK:                              # §1.13: refuse if an install is running, and claim busy atomically
+        if FW["busy"]: raise RuntimeError("busy: %s" % FW["busy"])
+        FW["busy"] = "receiving"; FW["progress"] = 0.0; FW["error"] = None
     tmp = FW_IMG + ".part"; h = hashlib.sha256(); got = 0
-    FW["busy"] = "receiving"; FW["progress"] = 0.0; FW["error"] = None
     try:
         with open(tmp, "wb") as f:
             while length is None or got < length:
@@ -1857,7 +2098,7 @@ def fw_receive(stream, length, name, source):
         except Exception: pass
         FW["error"] = str(e)[:160]; fw_log("receive failed: %s" % e); raise
     finally:
-        FW["busy"] = None; FW["progress"] = 0.0
+        if FW["busy"] == "receiving": FW["busy"] = None; FW["progress"] = 0.0   # only clear the flag we set
 
 def fw_fetch(ip):
     """Pull the image another cell holds (room distribution: members pull from the primary)."""
@@ -1932,6 +2173,40 @@ def fw_install(reboot=True, carry=True):
                                 lines = [me if l.startswith("root:") else l for l in lines]; open(sp, "w").write("\n".join(lines) + "\n")
                         except Exception as e: fw_log("shadow carry skipped: %s" % e)
                         fw_log("carried %d Troubadour files + root password into the new slot (%s)" % (n, newart))
+                        # §1.11: carry the AirPlay mod set too (the CARRY list above silently left it out, so a
+                        # slot update reverted to stock AirPlay). But the shims/variants are pinned to one
+                        # airplay2source build — LD_PRELOADing them into a different one would crash it. Carry
+                        # them ONLY when the new slot's stock airplay2source matches our base; else skip + warn.
+                        try:
+                            def _sha12(p):
+                                try:
+                                    h = hashlib.sha256()
+                                    with open(p, "rb") as fh:
+                                        for b in iter(lambda: fh.read(1 << 20), b""): h.update(b)
+                                    return h.hexdigest()
+                                except Exception: return None
+                            base_sha = _sha12("/usr/lib/troubadour-fw/stock")
+                            new_sha = _sha12(mp + "/usr/bin/airplay2source")
+                            if base_sha and new_sha and base_sha == new_sha:
+                                ap_files = ["/usr/bin/airplay2source", "/usr/bin/troubadour-fw"]
+                                ap_dirs = ["/usr/lib/troubadour", "/usr/lib/troubadour-fw",
+                                           "/etc/systemd/system/airplay2source.service.d",
+                                           "/etc/systemd/system/celldirector.service.d"]
+                                m2 = 0
+                                for p in ap_files:
+                                    if os.path.exists(p):
+                                        os.makedirs(os.path.dirname(mp + p), exist_ok=True)
+                                        _sh("cp -p %s %s" % (p, mp + p), 30); m2 += 1
+                                for dpath in ap_dirs:
+                                    if os.path.isdir(dpath):
+                                        os.makedirs(mp + dpath, exist_ok=True)
+                                        _sh("cp -a %s/. %s/" % (dpath, mp + dpath), 30); m2 += 1
+                                fw_log("carried AirPlay mod set (%d items; new slot base matches %s)" % (m2, base_sha[:12]))
+                            else:
+                                fw_log("AirPlay mods NOT carried: new slot airplay2source (%s) differs from our base (%s) — "
+                                       "rebuild the variants/shims for the new version, then troubadour-fw use <variant>"
+                                       % ((new_sha or "?")[:12], (base_sha or "?")[:12]))
+                        except Exception as e: fw_log("AirPlay mod carry skipped: %s" % e)
                 finally:
                     _sh("sync; umount %s" % mp, 30)
             else:
@@ -1958,11 +2233,26 @@ def fw_install(reboot=True, carry=True):
     return {"ok": True, "started": True}
 
 def fw_rollback():
-    act = fw_active_part(); other = 3 if act == 2 else 2
-    scr = "/tmp/fw_env.txt"; open(scr, "w").write("mender_boot_part %d\nmender_boot_part_hex %d\nupgrade_available 0\nbootcount 0\n" % (other, other))
-    _sh("fw_setenv -s %s" % scr, 20); persist_state(); fw_log("boot slot set to p%d, rebooting" % other)
+    # §1.11: never blindly switch slots. (1) We must know which slot is running — a missing root= in
+    # /proc/cmdline used to silently default the target to p2, i.e. possibly the slot we are on.
+    act = fw_active_part()
+    if act not in (2, 3):
+        raise RuntimeError("cannot determine the running slot from /proc/cmdline; refusing to roll back")
+    other = 3 if act == 2 else 2
+    # (2) The other slot must actually hold a bootable rootfs, or we would reboot into a corrupt/half-written
+    # slot. fw_slot_info mounts it read-only and reads its artifact_info.
+    info = fw_slot_info(other)
+    if info.get("error") or not info.get("artifact"):
+        raise RuntimeError("slot p%d has no usable rootfs (%s); refusing to roll back"
+                           % (other, info.get("error") or "no artifact_info"))
+    # (3) Keep the U-Boot fallback armed: upgrade_available=1 + bootcount=0 means if the other slot fails to
+    # come up, U-Boot reverts to this one. fw_commit_check() clears upgrade_available once it boots cleanly.
+    scr = "/tmp/fw_env.txt"
+    open(scr, "w").write("mender_boot_part %d\nmender_boot_part_hex %d\nupgrade_available 1\nbootcount 0\n" % (other, other))
+    _sh("fw_setenv -s %s" % scr, 20); persist_state()
+    fw_log("rollback: boot slot set to p%d (%s), fallback armed, rebooting" % (other, info.get("artifact")))
     threading.Timer(1.5, lambda: _sh("systemctl reboot", 10)).start()
-    return {"ok": True, "slot": other}
+    return {"ok": True, "slot": other, "artifact": info.get("artifact")}
 
 def fw_commit_check():
     """On the new slot after an update: the stack is up (we are running, celldirector + sound server active) → commit,
@@ -2087,17 +2377,45 @@ def persist_state():
         try: cur = json.loads(_read(CLOUD_STATE_FILE, "") or "null")
         except Exception: cur = None
         if cur == st: return True
-        tmp = CLOUD_STATE_FILE + ".agent"
+        tmp = CLOUD_STATE_FILE + ".agent.%d" % threading.get_ident()   # unique: keeper + cloud_block raced on one name
         open(tmp, "w").write(json.dumps(st)); os.replace(tmp, CLOUD_STATE_FILE)
         return True
     except Exception as e:
         log("persist_state: %s" % e); return False
 
-def apply_view(view):
+def apply_view(view, src=None):
     """Apply a member view locally (PatchState) and remember it."""
     _ensure_dir(); backup_state_once()
     patch = {"cell_state": view.get("cell_state") or {}, "room_state": view.get("room_state") or {},
              "room_neighbours": view.get("room_neighbours") or []}
+    # §1.7: an ssh_key in a room view becomes root authorized_keys. Accept it only from this cell's own
+    # primary; from anyone else on the LAN (or when we don't yet trust the sender) strip it. Internal
+    # applies (src is None) and the initial room bootstrap (no primary known yet) are left untouched.
+    if src and src not in ("127.0.0.1", "::1"):
+        prim_ips = set()
+        try:
+            for c in room_doc()["cells"].values():
+                if (c.get("role") or "").lower() == "primary":
+                    prim_ips.update(x for x in (c.get("ip_address"), c.get("wired_ip"), c.get("wifi_ip"), c.get("syfi_ip")) if x)
+        except Exception: pass
+        if prim_ips and src not in prim_ips:
+            # Unverified sender: it may not introduce or change a key, but it must not erase ones we already
+            # hold either (PatchState replaces these sections wholesale, and sshkeymanager would then drop the
+            # neighbours' authorized_keys). Keep the currently known value per serial.
+            cur = raw_state() or {}
+            known = {}
+            for e in [cur.get("cell_state") or {}] + list(cur.get("room_neighbours") or []):
+                if isinstance(e, dict) and e.get("serial_number"):
+                    known[e["serial_number"]] = (e.get("ssh_key"), e.get("ssh_host"))
+            changed = False
+            for e in [patch["cell_state"]] + [nb for nb in patch["room_neighbours"] if isinstance(nb, dict)]:
+                k, hst = known.get(e.get("serial_number"), (None, None))
+                if e.get("ssh_key") != k or e.get("ssh_host") != hst: changed = True
+                if k is None: e.pop("ssh_key", None)
+                else: e["ssh_key"] = k
+                if hst is None: e.pop("ssh_host", None)
+                else: e["ssh_host"] = hst
+            if changed: log("apply_view: ignored ssh_* changes from unverified sender %s (primary: %s)" % (src, sorted(prim_ips)))
     fresh = not (raw_state().get("cell_state") or {}).get("serial_number")
     ok = patch_state_strict(patch)
     if fresh or not (raw_state().get("room_state") or {}).get("room_id"):
@@ -2261,7 +2579,28 @@ def free_rim_spot(doc, rs):
     return {"x": round(cx + CELL_PLACEMENT * r * math.cos(a), 3), "y": round(cy + CELL_PLACEMENT * r * math.sin(a), 3),
             "z": 1.5, "rotation": round(math.degrees(a + math.pi) % 360.0, 1)}
 
-def op_admit(w):
+def verify_ssh(w, src=None):
+    """§1.7: never trust ssh_key/ssh_host from a request body — it becomes root authorized_keys on every cell.
+    Re-fetch the subject cell's own /api/whoami over its real address (the TCP peer when we have it) and keep
+    its ssh_key/ssh_host only when the serial matches. On any doubt, drop them (membership still works)."""
+    out = dict(w)
+    addr = src or w.get("ip")
+    trusted = None
+    if addr:
+        try:
+            o = agent_get(addr, "/api/whoami", timeout=4)
+            if o.get("serial") == w.get("serial"): trusted = o
+        except Exception as e:
+            log("verify_ssh: whoami %s failed: %s" % (addr, e))
+    if trusted:
+        out["ssh_key"] = trusted.get("ssh_key"); out["ssh_host"] = trusted.get("ssh_host")
+    else:
+        if w.get("ssh_key") or w.get("ssh_host"):
+            log("verify_ssh: dropping unverified ssh_key/ssh_host for %s (src=%s)" % (w.get("serial"), addr))
+        out["ssh_key"] = None; out["ssh_host"] = None
+    return out
+
+def op_admit(w, src=None):
     """(primary) Add the cell described by whoami `w` to our room and fan out, the new cell included."""
     with LC_LOCK:
         me = require_primary()
@@ -2269,6 +2608,7 @@ def op_admit(w):
         if not rs.get("room_id"):
             raise RuntimeError("this cell is not in a room yet; create one first")
         if w["serial"] == me["serial"]: raise RuntimeError("that is me")
+        w = verify_ssh(w, src)           # the key must come from the joining cell itself, not the POST body
         existing = doc["cells"].get(w["serial"])
         entry = new_cell_entry(w, rs, role="secondary", template=existing)
         if not (existing and existing.get("calibrated")):
@@ -2399,7 +2739,12 @@ def room_view():
                       "version": c.get("syng_os_version"), "isMe": s == doc["me"], "role_pinned": c.get("role_pinned")})
     rs = doc["room_state"]
     w = whoami(); iam = (w.get("role") or "").lower() != "secondary"
+    learn_wired_from(doc["cells"].values())
+    for c in cells:
+        c["wired_ip"] = w.get("wired_ip") if c["isMe"] else wired_known(c.get("ip"))
+    prim = next((c for c in cells if (c.get("role") or "").lower() == "primary"), None)
     return {"room_state": rs, "cells": cells, "me": doc["me"], "primary_ip": w.get("ip") if iam else primary_ip_of_room(),
+            "primary_wired_ip": (w.get("wired_ip") if iam else (prim or {}).get("wired_ip")),
             "i_am_primary": iam, "calibration": CAL_STATUS,
             "cloud_blocked": os.path.exists(CLOUD_BLOCK_MARK)}
 
@@ -2432,7 +2777,10 @@ def cal_resume_sources(paused):
 def cal_one_run():
     """One DasCalibrator run; returns the results list pycalibrator posted back (or None)."""
     CAL_STATUS["last_results"] = None
-    bus = dbus.SystemBus()   # own connection: Run blocks for minutes and must not hold DBUS_LOCK
+    # §1.13: dbus.SystemBus() returns the shared singleton (BUS); Run blocks for ~20 min and would pin the
+    # connection everyone else uses. private=True is what actually gives this its own connection.
+    try: bus = dbus.SystemBus(private=True)
+    except Exception: bus = dbus.SystemBus()
     R = dbus.Interface(bus.get_object("com.syng.DasCalibrator", "/com/syng/DasCalibrator/Runner"), "com.syng.DasCalibrator")
     R.Run(timeout=1200)
     for _ in range(40):
@@ -2646,6 +2994,9 @@ def wifi_scan():
 
 def wifi_connect(ssid, psk=None, hidden=False):
     """Provision through a connman config file (no interactive agent needed); connman auto-connects."""
+    # §1.13: ssid/psk go verbatim into an INI file — a newline would inject extra keys/sections. Forbid it.
+    if ssid is None or any(c in str(ssid) for c in "\r\n"): raise RuntimeError("invalid SSID")
+    if psk is not None and any(c in str(psk) for c in "\r\n"): raise RuntimeError("invalid passphrase")
     name = re.sub(r"[^A-Za-z0-9_-]", "_", ssid)[:40]
     path = "/var/lib/connman/agent-%s.config" % name
     cfg = "[service_%s]\nType = wifi\nName = %s\nIPv4 = dhcp\nAutoConnect = true\n" % (name, ssid)
@@ -2656,12 +3007,12 @@ def wifi_connect(ssid, psk=None, hidden=False):
     _sh("connmanctl enable wifi", 5); _sh("connmanctl scan wifi", 20)
     # nudge: connect by service id if it is visible
     sid = next((s["id"] for s in wifi_services() if s["name"] == ssid), None)
-    out = _sh("connmanctl connect %s" % sid, 25) if sid else "provisioned; waiting for connman"
+    out = _sh("connmanctl connect %s" % shlex.quote(sid), 25) if sid else "provisioned; waiting for connman"
     return {"ok": True, "config": path, "service": sid, "out": out.strip()[-300:]}
 
 def wifi_forget(ssid):
     sid = next((s["id"] for s in wifi_services() if s["name"] == ssid), None)
-    if sid: _sh("connmanctl remove %s" % sid, 10)
+    if sid: _sh("connmanctl remove %s" % shlex.quote(sid), 10)
     name = re.sub(r"[^A-Za-z0-9_-]", "_", ssid)[:40]
     try: os.remove("/var/lib/connman/agent-%s.config" % name)
     except Exception: pass
@@ -2672,7 +3023,12 @@ def cloud_block_status():
 
 def cloud_block(on):
     if not os.path.exists("/usr/bin/syng-cloud-block"): return {"ok": False, "error": "syng-cloud-block not installed"}
-    return {"ok": True, "out": _sh("/usr/bin/syng-cloud-block %s" % ("on" if on else "off"), 60)[-400:]}
+    try: persist_state()   # §1.13: the tool restarts cloudsyncd; save the live room doc first so it is re-seeded, not lost
+    except Exception as e: log("cloud_block: persist before restart failed: %s" % e)
+    out = _sh("/usr/bin/syng-cloud-block %s" % ("on" if on else "off"), 60)[-400:]
+    ok = os.path.exists(CLOUD_BLOCK_MARK) == bool(on)       # report what actually happened, not just that we ran it
+    if not ok: log("CLOUDBLOCK on=%s FAILED: %s" % (on, out.strip()[-200:]))
+    return {"ok": ok, "blocked": os.path.exists(CLOUD_BLOCK_MARK), "out": out}
 
 # ---------- membership keeper (primary): keep ip_address current, mark online ----------
 def link_sync(c, w):
@@ -2685,6 +3041,7 @@ def link_sync(c, w):
         if k == "syfi_ip" and wired and w.get("wired_ip"): v = w["wired_ip"]   # wired room: main packets over the wire
         if v is not None and v != "" and c.get(k) != v: c[k] = v; changed = True
     if w.get("wired_ip") is not None and c.get("wired_ip") != w.get("wired_ip"): c["wired_ip"] = w.get("wired_ip"); changed = True
+    learn_wired(c.get("ip_address") or w.get("ip"), w.get("wired_ip"))
     return changed
 
 def link_watch(serial, ip, seconds=150):
@@ -2730,31 +3087,50 @@ def keeper_loop():
             w = whoami()
             persist_state()
             if (w.get("role") or "").lower() != "secondary":
-                doc = room_doc(); changed = False
-                for s, c in doc["cells"].items():
-                    if s == doc["me"]:
-                        if w.get("ip") and c.get("ip_address") != w["ip"]: c["ip_address"] = w["ip"]; changed = True
-                        if w.get("role") and c.get("role") != w["role"]: c["role"] = w["role"]; changed = True
-                        if link_sync(c, w): changed = True
-                        continue
-                    ip = c.get("ip_address")
+                # §1.13: gather every member's live whoami WITHOUT LC_LOCK (each call can take seconds), then
+                # apply to a freshly re-read doc under the lock, so a layout/soundcheck change that landed in
+                # the meantime is not clobbered by a stale copy.
+                snapshot = []
+                try:
+                    with LC_LOCK: snapshot = [(s, c.get("ip_address")) for s, c in room_doc()["cells"].items()]
+                except Exception: snapshot = []
+                me_serial = None
+                probed = {}   # serial -> live whoami dict (or a {"_moved_ip": ip} hint)
+                for s, ip in snapshot:
                     try:
-                        o = agent_get(ip, "/api/whoami", timeout=3)
-                        if o.get("serial") == s and o.get("ip") and o["ip"] != ip:
-                            c["ip_address"] = o["ip"]; changed = True
-                        if o.get("serial") == s and o.get("role") and o["role"] != c.get("role"):   # celldirector re-elected
-                            c["role"] = o["role"]; changed = True
-                        if o.get("ssh_key") and o["ssh_key"] != c.get("ssh_key"): c["ssh_key"] = o["ssh_key"]; changed = True
-                        if o.get("serial") == s and link_sync(c, o): changed = True
+                        with LC_LOCK: me_serial = room_doc().get("me")
+                    except Exception: pass
+                    if s == me_serial: continue
+                    try:
+                        probed[s] = agent_get(ip, "/api/whoami", timeout=3)
                     except Exception:
-                        # moved? look it up by serial on the LAN
                         try:
                             d = discover(timeout=0.8)
                             hit = next((x for x in d["cells"] if x.get("serial") == s and x.get("ip")), None)
-                            if hit and hit["ip"] != ip: c["ip_address"] = hit["ip"]; changed = True
+                            if hit and hit["ip"] != ip: probed[s] = {"_moved_ip": hit["ip"]}
                         except Exception: pass
-                if changed:
-                    bump(doc["room_state"]); fan_out(doc)
+                with LC_LOCK:
+                    doc = room_doc(); changed = False
+                    for s, c in doc["cells"].items():
+                        if s == doc["me"]:
+                            if w.get("ip") and c.get("ip_address") != w["ip"]: c["ip_address"] = w["ip"]; changed = True
+                            if w.get("role") and c.get("role") != w["role"]: c["role"] = w["role"]; changed = True
+                            if link_sync(c, w): changed = True
+                            continue
+                        o = probed.get(s)
+                        if not o: continue
+                        if "_moved_ip" in o:
+                            if o["_moved_ip"] != c.get("ip_address"): c["ip_address"] = o["_moved_ip"]; changed = True
+                            continue
+                        if o.get("serial") == s and o.get("ip") and o["ip"] != c.get("ip_address"):
+                            c["ip_address"] = o["ip"]; changed = True
+                        if o.get("serial") == s and o.get("role") and o["role"] != c.get("role"):   # celldirector re-elected
+                            c["role"] = o["role"]; changed = True
+                        # §1.7: only trust an ssh_key from the cell whose serial actually matches this slot
+                        if o.get("serial") == s and o.get("ssh_key") and o["ssh_key"] != c.get("ssh_key"): c["ssh_key"] = o["ssh_key"]; changed = True
+                        if o.get("serial") == s and link_sync(c, o): changed = True
+                    if changed:
+                        bump(doc["room_state"]); fan_out(doc)
         except Exception as e:
             log("keeper: %s" % e)
         time.sleep(90)
@@ -2824,10 +3200,13 @@ def artwork_url(sid):
     except Exception: return None
 
 SETTINGS_FILE = LC_DIR + "/settings.json"
-SETTINGS = {"volume_limit": 0, "sound_mode": "syng", "link_mode": "syfi"}
+SETTINGS = {"volume_limit": 0, "sound_mode": "syng", "link_mode": "syfi",
+            "atmos_fill": False, "airplay_quick_recover": True,
+            "airplay_badge_fix": True}
 def load_settings():
     try: SETTINGS.update(json.loads(_read(SETTINGS_FILE, "{}") or "{}"))
     except Exception: pass
+    SETTINGS.pop("atmos_height", None)          # b63's height switch: cellbroker owns that property (b64)
 def save_settings():
     _ensure_dir()
     try: open(SETTINGS_FILE, "w").write(json.dumps(SETTINGS))
@@ -3179,8 +3558,246 @@ def underruns_room(hours=168):
     cells = [underruns_local(hours)] + list(_members_call("/api/underruns/local?hours=%d" % int(hours), timeout=45).values())
     return {"hours": int(hours), "now": time.time(), "cells": cells}
 
+# ---------- AirPlay / Atmos (b63) ----------
+def format_label(layout):
+    """A truthful name for a source channel layout ("L R C Lfe Lss Rss Tfl Tfr Trl Trr Lrs Rrs" -> Dolby Atmos 7.1.4)."""
+    ch = [c for c in str(layout or "").split() if c]
+    n = len(ch)
+    if not n: return None
+    top = sum(1 for c in ch if c.startswith("T") or c in ("Vhl", "Vhr", "Ltf", "Rtf", "Ltr", "Rtr"))
+    lfe = 1 if any(c.lower().startswith("lfe") for c in ch) else 0
+    if all(c.isdigit() for c in ch): return "%d ch" % n          # an idle source reports bare channel numbers
+    if n == 1: return "Mono"
+    if n == 2 and not top: return "Stereo"
+    bed = n - top - lfe
+    name = "%d.%d%s" % (bed, lfe, (".%d" % top) if top else "")
+    return ("Dolby Atmos " if top else "Surround ") + name
+
+AP_DROPIN_DIR = "/etc/systemd/system/airplay2source.service.d"
+AP_DROPIN = AP_DROPIN_DIR + "/troubadour-quick-recover.conf"
+
+def _ap_pid():
+    try: return int(_sh("pidof airplay2source", 3).split()[0])
+    except Exception: return None
+
+def quick_recover_live():
+    pid = _ap_pid(); lim = None
+    if pid:
+        try:
+            import resource
+            lim = resource.prlimit(pid, resource.RLIMIT_CORE)[0]
+        except Exception: pass
+    return {"dropin": os.path.exists(AP_DROPIN), "core_limit": lim, "pid": pid,
+            "on": os.path.exists(AP_DROPIN) and (lim == 0 if pid else True)}
+
+def quick_recover_apply(on):
+    """No core dump for airplay2source: the unit (future starts) and the running process (now). syng-coredump
+    passes the limit on to systemd-coredump, which then skips the dump at once (measured 0.3 s to reap)."""
+    import resource
+    if on:
+        if not os.path.exists(AP_DROPIN):
+            os.makedirs(AP_DROPIN_DIR, exist_ok=True)
+            open(AP_DROPIN, "w").write("# Troubadour: a crash restarts in seconds instead of writing a 150 MB core dump first\n"
+                                       "[Service]\nLimitCORE=0\n")
+            _sh("systemctl daemon-reload", 20)
+        lim = (0, 0)
+    else:
+        if os.path.exists(AP_DROPIN):
+            os.remove(AP_DROPIN)
+            _sh("systemctl daemon-reload", 20)
+        lim = (resource.RLIM_INFINITY, resource.RLIM_INFINITY)
+    pid = _ap_pid()
+    if pid:
+        try: resource.prlimit(pid, resource.RLIMIT_CORE, lim)
+        except Exception as e: log("quick recover prlimit: %s" % e)
+    return quick_recover_live()
+
+# enableHeightProcessing is NOT here: cellbroker sets it from the room's height layers (b64)
+ATMOS_PROPS = (("atmos_fill", "enableBeyondStereoDuplication"),)
+
+def atmos_apply(force=False):
+    """Bring each music source's two properties to the settings; writes only what differs."""
+    n = 0
+    for sid in source_ids():
+        if not is_music(sid): continue
+        dest, path = source_target_cached(sid)
+        if not dest or not path: continue
+        try: cur = get_all(dest, path, ASRC_IF)
+        except Exception: continue
+        for key, prop in ATMOS_PROPS:
+            if prop not in cur: continue
+            want = bool(SETTINGS.get(key))
+            if force or bool(cur.get(prop)) != want:
+                try:
+                    set_prop(dest, path, ASRC_IF, prop, dbus.Boolean(want, variant_level=1)); n += 1
+                    log("ATMOS %s %s=%s" % (sid, prop, want))
+                except Exception as e:
+                    _src_cache["targets"].pop(sid, None); log("ATMOS %s %s: %s" % (sid, prop, e))
+    return n
+
+# ---------- correct the AirPlay badge (b66) ----------
+# badgingType enum in airplay2source: 0 Unknown, 1 Stereo, 2 Surround, 3 Spatial Audio, 4 Lossless,
+# 5 Dolby Audio, 6 Undefined, 7 Dolby Atmos. AirPlay2Source sets it from the sender (default 0), not from
+# the format, so Atmos shows as "Stereo". We correct only the plainly-wrong values for a multichannel/height
+# stream; we never override Spatial/Lossless/Dolby, never downgrade, and leave stereo/mono alone.
+BADGE_SURROUND, BADGE_ATMOS = 2, 7
+BADGE_FIXABLE = (0, 1, 6)                 # Unknown / Stereo / Undefined -> wrong for a multichannel stream
+_TOPCH = ("Vhl", "Vhr", "Ltf", "Rtf", "Ltr", "Rtr")
+
+def badge_for_layout(layout):
+    """The badge a channel layout deserves, or None to leave the stock value (idle, stereo, mono)."""
+    ch = [c for c in str(layout or "").split() if c]
+    if not ch or all(c.isdigit() for c in ch): return None          # idle source reports bare numbers
+    if sum(1 for c in ch if c.startswith("T") or c in _TOPCH): return BADGE_ATMOS
+    if len(ch) > 2: return BADGE_SURROUND
+    return None
+
+def badge_apply():
+    """Raise each music source's badgingType to match its negotiated layout; writes only when plainly wrong."""
+    n = 0
+    for sid in source_ids():
+        if not is_music(sid): continue
+        dest, path = source_target_cached(sid)
+        if not dest or not path: continue
+        try: cur = get_all(dest, path, ASRC_IF)
+        except Exception: continue
+        if "badgingType" not in cur or "channelLayout" not in cur: continue
+        want = badge_for_layout(cur.get("channelLayout"))
+        if want is None: continue
+        try: now = int(cur.get("badgingType"))
+        except Exception: continue
+        if now not in BADGE_FIXABLE or now == want: continue
+        try:
+            set_prop(dest, path, ASRC_IF, "badgingType", dbus.Int32(want, variant_level=1)); n += 1
+            log("BADGE %s %s -> %d (layout %r)" % (sid, now, want, cur.get("channelLayout")))
+        except Exception as e:
+            _src_cache["targets"].pop(sid, None); log("BADGE %s: %s" % (sid, e))
+    return n
+
+def airplay_keeper_loop():
+    time.sleep(30)
+    while True:
+        try:
+            if SETTINGS.get("atmos_fill"): atmos_apply()
+            if SETTINGS.get("airplay_badge_fix", True): badge_apply()
+            if SETTINGS.get("airplay_quick_recover") and not quick_recover_live()["on"]: quick_recover_apply(True)
+        except Exception as e: log("airplay keeper: %s" % e)
+        time.sleep(15)
+
+# ---------- quick-recovery crash counter (b67) ----------
+# The b65 "unstick silent track changes" hack is retired: silent track changes are now fixed at the
+# source in airplay2source (render-snap + zero jitter-lead), so the pause/play workaround is gone.
+# What stays worth surfacing is how often AirPlay actually *crashed* and quick-recovery brought it back.
+QR_FILE = LC_DIR + "/quick_recover.json"
+QR = {"count": 0, "last": 0.0}          # crashes recovered (persistent), unix time of the last one
+QR_LOCK = threading.Lock()
+
+def _qr_load():
+    try: QR.update(json.loads(_read(QR_FILE, "{}") or "{}"))
+    except Exception: pass
+
+def _qr_save():
+    _ensure_dir()
+    try: open(QR_FILE + ".tmp", "w").write(json.dumps(QR)); os.replace(QR_FILE + ".tmp", QR_FILE)
+    except Exception as e: log("quick recover save: %s" % e)
+
+def _ap_nrestarts():
+    """systemd's auto-restart tally for airplay2source (it resets to 0 on a manual (re)start)."""
+    try:
+        v = _sh("systemctl show airplay2source -p NRestarts --value", 6).strip()
+        return int(v) if v.isdigit() else None
+    except Exception:
+        return None
+
+def quick_recover_stats():
+    with QR_LOCK:
+        return {"count": int(QR.get("count") or 0), "last": float(QR.get("last") or 0.0)}
+
+def quick_recover_watch():
+    """Count every quick-recovery: each time systemd auto-restarts airplay2source after a crash.
+    NRestarts resets whenever the unit is (re)started by hand (deploys, firmware switches), so we keep a
+    persistent running total by adding each positive jump and ignoring the resets."""
+    _qr_load()
+    last_nr = None
+    while True:
+        try:
+            nr = _ap_nrestarts()
+            if nr is not None:
+                if last_nr is None:
+                    with QR_LOCK:
+                        if not QR.get("count") and nr:          # fresh state: adopt systemd's current tally once
+                            QR["count"] = nr
+                            if not QR.get("last"): QR["last"] = time.time()
+                            _qr_save()
+                    last_nr = nr
+                elif nr > last_nr:
+                    with QR_LOCK:
+                        QR["count"] = int(QR.get("count") or 0) + (nr - last_nr); QR["last"] = time.time()
+                    _qr_save(); last_nr = nr
+                elif nr < last_nr:
+                    last_nr = nr                                 # manual (re)start reset NRestarts; keep our total
+        except Exception as e:
+            log("quick recover watch: %s" % e)
+        time.sleep(10)
+
+def airplay_local():
+    me = whoami()
+    out = {"ip": me.get("ip"), "serial": me.get("serial"), "name": me.get("name"), "role": (me.get("role") or "").lower(),
+           "settings": {"fill": bool(SETTINGS.get("atmos_fill")),
+                        "badge_fix": bool(SETTINGS.get("airplay_badge_fix", True)),
+                        "quick_recover": bool(SETTINGS.get("airplay_quick_recover"))},
+           "quick_recover": dict(quick_recover_live(), **quick_recover_stats())}
+    try:
+        dest, path = source_target_cached("airplay2")
+        rt = get_all(ASRV, "/com/syng/AudioSource/Runtime/airplay2", RUN_IF)
+        b = get_all(dest, path, ASRC_IF) if dest and path else {}
+        lay = b.get("channelLayout")
+        out.update({"active": bool(rt.get("active")), "state": b.get("state"), "layout": lay,
+                    "channels": len(str(lay or "").split()), "format": format_label(lay), "badge": b.get("badgingType"),
+                    "height": b.get("enableHeightProcessing"), "fill": b.get("enableBeyondStereoDuplication")})
+    except Exception as e:
+        out["error"] = str(e)[:120]
+    return out
+
+def airplay_room():
+    cells = [airplay_local()] + list(_members_call("/api/airplay/local").values())
+    layers = {}
+    try:
+        for serial, c in room_doc()["cells"].items():
+            layers[serial] = int(round(float(c.get("height_layer") or 0)))
+    except Exception: pass
+    hp = next((c.get("height") for c in cells if c.get("height") is not None), None)
+    return {"cells": cells, "height_layers": layers, "height_processing": hp,
+            "primary_ip": next((c.get("ip") for c in cells if c.get("role") == "primary"), None)}
+
+def airplay_set_local(body):
+    changed = {}
+    for k, key in (("fill", "atmos_fill"), ("quick_recover", "airplay_quick_recover"), ("badge_fix", "airplay_badge_fix")):
+        if k in body and body[k] is not None:
+            SETTINGS[key] = bool(body[k]); changed[k] = SETTINGS[key]
+    if changed: save_settings()
+    if "fill" in changed: atmos_apply(force=True)
+    if changed.get("badge_fix"): badge_apply()
+    if "quick_recover" in changed: quick_recover_apply(changed["quick_recover"])
+    log("AIRPLAY settings %s" % changed)
+    return airplay_local()
+
+def _fleet_ips():
+    ips = set()
+    try:
+        for room in (discover() or {}).get("rooms", []):
+            for c in room.get("cells", []):
+                if c.get("ip"): ips.add(c["ip"])
+    except Exception: pass
+    try: ips |= set(i for i in room_member_ips(get_state()) if i)
+    except Exception: pass
+    ips.discard(whoami().get("ip"))
+    return sorted(ips)
+
 def lc_get(path):
     if path.startswith("/api/synccheck/last"): return {"last": SYNC["last"], "history": SYNC["history"], "busy": SYNC["busy"]}
+    if path.startswith("/api/airplay/local"): return airplay_local()
+    if path.startswith("/api/airplay"): return airplay_room()
     if path.startswith("/api/netbuffer/local"): return netbuffer_local()
     if path.startswith("/api/netbuffer"): return netbuffer_room()
     if path.startswith("/api/underruns"):
@@ -3188,7 +3805,9 @@ def lc_get(path):
         return underruns_local(h) if path.startswith("/api/underruns/local") else underruns_room(h)
     if path.startswith("/api/storm"): return {"underruns_per_s": round(STORM["last_rate"], 1), "strikes": STORM["strikes"],
                                               "restarts": STORM["history"], "fixed_at": STORM["fixed_at"]}
-    if path.startswith("/api/synccheck"): return sync_check(autofix=False, reason="manual")
+    # §1.13: a bare GET /api/synccheck used to record the mic for 8 s. Reads must have no side effects —
+    # return the last result instead; POST /api/synccheck runs a new measurement.
+    if path.startswith("/api/synccheck"): return {"last": SYNC["last"], "history": SYNC["history"], "busy": SYNC["busy"]}
     if path.startswith("/api/link"): return link_status()
     if path.startswith("/api/net"): return net_info()
     if path.startswith("/api/firmware"): return fw_status()
@@ -3205,7 +3824,20 @@ def lc_get(path):
     if path.startswith("/api/room/backup"):
         return json.loads(_read(LC_BACKUP, "null") or "null") or {"error": "no backup on this cell"}
     if path.startswith("/api/discover"): return discover()
-    if path.startswith("/api/room/doc"): return raw_state()
+    if path.startswith("/api/room/doc"):
+        # §1.14: this debug dump used to include every neighbour's ssh_host/ssh_key and the SyFi password.
+        # Redact them — the dump is for inspecting room/layout state, not for handing out secrets.
+        import copy as _copy
+        st = _copy.deepcopy(raw_state() or {})
+        def _redact(d):
+            if isinstance(d, dict):
+                for k in list(d.keys()):
+                    if k in ("ssh_key", "ssh_host", "syfi_password"): d[k] = "***redacted***" if d.get(k) else d.get(k)
+                    else: _redact(d[k])
+            elif isinstance(d, list):
+                for x in d: _redact(x)
+        _redact(st)
+        return st
     if path.startswith("/api/room"): return room_view()
     if path.startswith("/api/calibration/status"): return CAL_STATUS
     if path.startswith("/api/wifi/scan"): return {"services": wifi_scan()}
@@ -3215,6 +3847,21 @@ def lc_get(path):
     return None
 
 def lc_post(path, body):
+    if path.startswith("/api/airplay"):
+        mine = airplay_set_local(body)
+        if body.get("_local"): return mine
+        fwd = {k: body[k] for k in ("fill", "quick_recover", "badge_fix") if k in body}
+        fwd["_local"] = True
+        ips = [i for i in room_member_ips(get_state()) if i and i != whoami().get("ip")] if body.get("scope") == "room" else _fleet_ips()
+        others = {}; lock = threading.Lock()
+        def one(ip):
+            try: r = agent_post(ip, "/api/airplay", fwd, timeout=10)
+            except Exception as e: r = {"error": str(e)[:80]}
+            with lock: others[ip] = r
+        ths = [threading.Thread(target=one, args=(ip,), daemon=True) for ip in ips]
+        for t in ths: t.start()
+        for t in ths: t.join(14)
+        return {"ok": True, "me": mine, "others": others}
     if path.startswith("/api/netbuffer"):
         ms = int(body.get("ms"))
         mine = netbuffer_set_local(ms, restart=body.get("restart", True) is not False)
@@ -3233,8 +3880,8 @@ def lc_post(path, body):
     if path.startswith("/api/capture/envelope"): return capture_envelope(body.get("at"), body.get("seconds", 8))
     if path.startswith("/api/resync"): return audio_resync("manual")
     if path.startswith("/api/synccheck"): return sync_check(autofix=bool(body.get("fix", False)), reason="manual")
-    if path.startswith("/api/room/apply"): return {"ok": apply_view(body)}
-    if path.startswith("/api/room/admit"): return op_admit(body["cell"])
+    if path.startswith("/api/room/apply"): return {"ok": apply_view(body, src=body.get("_src"))}
+    if path.startswith("/api/room/admit"): return op_admit(body["cell"], src=body.get("_src"))
     if path.startswith("/api/room/join"): return op_join(body["ip"])
     if path.startswith("/api/room/create"): return op_create_room(body.get("name"), body.get("place_id"))
     if path.startswith("/api/room/remove"): return op_remove(body["serial"], body.get("_notify", True))
@@ -3266,14 +3913,26 @@ def lc_post(path, body):
     if path.startswith("/api/wifi/connect"): return wifi_connect(body["ssid"], body.get("psk"), bool(body.get("hidden")))
     if path.startswith("/api/wifi/forget"): return wifi_forget(body["ssid"])
     if path.startswith("/api/cloudblock"):
-        r = cloud_block(bool(body.get("on")))
+        on = bool(body.get("on"))
+        log("CLOUDBLOCK on=%s scope=%s from=%s" % (on, body.get("scope") or ("member" if body.get("_local") else "this"), body.get("_src")))
         if body.get("scope") == "group" and not body.get("_local"):
-            r["group"] = {}
+            # All members (and this cell) in PARALLEL: each run restarts five services, and the old one-after-another
+            # loop with a 70 s per-member timeout overran the apps' 25 s request timeout — the app reported a failure
+            # and one slow/unreachable member stalled every member after it.
+            me = whoami().get("serial"); res = {}; lock = threading.Lock(); ths = []
+            def one(serial, ip):
+                try: v = agent_post(ip, "/api/cloudblock", {"on": on, "_local": True}, timeout=20).get("ok")
+                except Exception as e: v = str(e)[:80]
+                with lock: res[serial] = v
             for serial, c in room_doc()["cells"].items():
-                if c.get("ip_address") and serial != whoami().get("serial"):
-                    try: r["group"][serial] = agent_post(c["ip_address"], "/api/cloudblock", {"on": bool(body.get("on")), "_local": True}, timeout=70).get("ok")
-                    except Exception as e: r["group"][serial] = str(e)
-        return r
+                if c.get("ip_address") and serial != me:
+                    t = threading.Thread(target=one, args=(serial, c["ip_address"]), daemon=True); t.start(); ths.append(t)
+            r = cloud_block(on)
+            for t in ths: t.join(22)
+            r["group"] = res
+            r["ok"] = bool(r.get("ok")) and all(v is True for v in res.values())
+            return r
+        return cloud_block(on)
     if path.startswith("/api/housekeeping"): return housekeeping_action(body.get("action"), body.get("name"))
     if path.startswith("/api/ping"): return op_ping(body.get("serial"), body.get("vol"), bool(body.get("all")))
     if path.startswith("/api/transport"): return {"ok": transport(body.get("source"), body.get("action"), body.get("position"))}
@@ -3301,6 +3960,8 @@ def lc_start():
     threading.Thread(target=keeper_loop, daemon=True).start()
     threading.Thread(target=bass_watch_loop, daemon=True).start()
     threading.Thread(target=storm_watch_loop, daemon=True).start()
+    threading.Thread(target=airplay_keeper_loop, daemon=True).start()
+    threading.Thread(target=quick_recover_watch, daemon=True).start()
 
 
 PAGE = r"""<!doctype html><html lang=en><head><meta charset=utf-8>
@@ -3442,6 +4103,7 @@ window.cycleTheme=function(){t=T[(T.indexOf(t)+1)%T.length];try{localStorage.set
   <svg id=tonecurve viewBox="0 0 300 66" preserveAspectRatio=none style="width:100%;height:58px;display:block;margin-bottom:10px;background:var(--surface2);border:1px solid var(--line);border-radius:12px"></svg>
   <div class=ctl><label>Lows <b id=bassval>0</b></label><input type=range class=tone id=bass min=-100 max=100 value=0></div>
   <div class=ctl><label>Highs <b id=tiltval>0</b></label><input type=range class=tone id=tilt min=-100 max=100 value=0></div>
+  <div class=rowb style="margin-top:6px"><button class="btn sm" id=toneflat>Flat</button></div>
 </section>
 
 <section class=card id=modecard><h2>SOUND MODE</h2>
@@ -3547,7 +4209,9 @@ const TEMP={SoC_Temperature:'SoC',PMIC_Temperature:'PMIC',CPU_Temperature:'CPU',
 const ICON={airplay2:'AirPlay',spotify:'Spotify',tidal:'TIDAL',CalibrationClient:'Calibrate',usbgadget:'USB-C',usbgadgetsource:'USB-C',usbhost:'USB in',usbhostsource:'USB in',hdmi:'HDMI',hdmisource:'HDMI',pd:'Pure Data',pdaudiosource:'Pure Data'};
 const srcName=(id,s)=>ICON[id]||(s&&s.displayName)||id;
 let dragging={}, lastPost={};
-async function post(path,body){try{await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}catch(e){}}
+function TH(){const h={'Content-Type':'application/json'};let t;try{t=localStorage.getItem('tbtok');}catch(e){}if(t)h['X-Troubadour-Token']=t;return h;} // §1.6: send the API token when the user has set one
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); // §1.8: escape untrusted text before innerHTML
+async function post(path,body){try{await fetch(path,{method:'POST',headers:TH(),body:JSON.stringify(body)});}catch(e){}}
 function throttle(key,fn,ms){const t=Date.now();if(t-(lastPost[key]||0)>=ms){lastPost[key]=t;fn();}}
 function tile(t,rows){const r=rows.filter(Boolean).map(([k,v,c])=>`<div class=row><span>${k}</span><span class="${c||''}">${v}</span></div>`).join('');return r?`<div class=card><h2>${t}</h2>${r}</div>`:'';}
 function activeSrc(sources){for(const[id,s]of Object.entries(sources||{}))if(s.active)return id;return null;}
@@ -4320,11 +4984,11 @@ function updateCalib(cal){
 }
 function renderControls(sources){
   const ids=Object.keys(sources||{}).filter(id=>sources[id].music);
-  $('#srcs').innerHTML=ids.map(id=>`<button class="srcbtn ${sources[id].active?'on':''}" data-src="${id}">${srcName(id,sources[id])}</button>`).join('');
+  $('#srcs').innerHTML=ids.map(id=>`<button class="srcbtn ${sources[id].active?'on':''}" data-src="${id}">${esc(srcName(id,sources[id]))}</button>`).join('');
   $('#srcs').querySelectorAll('.srcbtn').forEach(b=>b.onclick=()=>{
     const id=b.dataset.src;post('/api/source',{id,on:!sources[id].active});b.classList.toggle('on');});
   const act=activeSrc(sources);
-  const np=act&&sources[act].playing&&sources[act].title?`<b>${sources[act].title}</b>${sources[act].artist?' — '+sources[act].artist:''}`:(act?('<b>'+(ICON[act]||act)+'</b> active'):'Nothing playing');
+  const np=act&&sources[act].playing&&sources[act].title?`<b>${esc(sources[act].title)}</b>${sources[act].artist?' — '+esc(sources[act].artist):''}`:(act?('<b>'+(ICON[act]||act)+'</b> active'):'Nothing playing');
   const A=act&&sources[act]; const hasMeta=A&&(A.title||A.artist);
   $('#nowplaying').style.display=hasMeta?'flex':'none'; $('#np').style.display=hasMeta?'none':'';
   $('#np').innerHTML=np;
@@ -4335,7 +4999,7 @@ function renderControls(sources){
     const mmss=t=>{t=Math.max(0,Math.round(t));return Math.floor(t/60)+':'+String(t%60).padStart(2,'0');}; $('#nptime').textContent=dur>0?mmss(pos)+' / '+mmss(dur):'';
     const ctl=A.controls||[]; $('#transport').querySelectorAll('[data-t]').forEach(b=>{const t=b.dataset.t; const need=t==='playpause'?(A.playing?'pause':'play'):t; b.disabled=ctl.length&&!ctl.includes(need); b.textContent=t==='playpause'?(A.playing?'❚❚':'▶'):(t==='next'?'⏭':'⏮'); b.onclick=()=>{post('/api/transport',{source:act,action:need});};});
   }
-  const badge=A?[...new Set([A.badging,A.mixType,A.layout].filter(x=>x&&x!=='none'&&x!=='unknown'))].join(' · '):''; $('#mixbadge').textContent=(window.__viaPrimary?'via primary '+window.__viaPrimary+(badge?' · ':''):'')+badge;
+  const badge=A?[...new Set([A.format,A.badging,A.mixType,A.layout].filter(x=>x&&x!=='none'&&x!=='unknown'))].join(' · '):''; $('#mixbadge').textContent=(window.__viaPrimary?'via primary '+window.__viaPrimary+(badge?' · ':''):'')+badge;
   // volume reflects active (or first music) source
   const vs=act?sources[act]:(sources[ids[0]]||{});
   if(!dragging.vol&&vs.volume!=null){const v=Math.round(vs.volume*100);$('#vol').value=v;$('#volval').textContent=v;if(FIELD&&!(FIELD.state.grab&&FIELD.state.grab.t==='vol'))FIELD.setVolume(vs.volume);}
@@ -4367,6 +5031,7 @@ function wireSlider(id,label,onsend){const el=$('#'+id);
 wireSlider('vol','volval',v=>post('/api/volume',{source:'all',volume:v/100}));
 wireSlider('bass','bassval',v=>post('/api/tone',{bass:v/100,tilt:$('#tilt').value/100}));
 wireSlider('tilt','tiltval',v=>post('/api/tone',{bass:$('#bass').value/100,tilt:v/100}));
+$('#toneflat').onclick=()=>{$('#bass').value=0;$('#tilt').value=0;$('#bassval').textContent='0';$('#tiltval').textContent='0';if(typeof drawTone==='function')drawTone();post('/api/tone',{bass:0,tilt:0});};
 $('#bass').addEventListener('input',drawTone);$('#tilt').addEventListener('input',drawTone);
 // LED tuning sliders restart the daemon, so only post on release (change), not during drag
 function wireTune(id,label,onsend,fmt){const el=$('#'+id),f=fmt||(v=>v);
@@ -4419,8 +5084,8 @@ async function tick(){
   if(fleet.length>1){$('#fleetcard').style.display='';$('#fcount').textContent=fleet.length+' cells';
     $('#fleet').innerHTML=fleet.map(c=>{const pri=(c.role||'').includes('primary');
      return `<div class="fcell ${c.isMe?'me':''}"><span class="fdot ${pri?'pri':(c.activeSource?'on':'')}"></span>
-      <span class=nm title="double-click to name" data-name="${c.serial}" style="cursor:text">${c.name?c.name+' <span class=muted style="font-weight:500">'+short(c.serial)+'</span>':short(c.serial)}${c.isMe?' · this one':''}<div class=muted style="font-size:11px;font-weight:500" data-live="${c.serial}"></div></span>
-      <span class=mt>${c.role||''} · ${c.activeSource?c.activeSource+' · ':''}${c.calibrated?'':'uncalibrated · '}${c.isMe?(c.ip||''):`<a href="http://${c.ip}:8080/" style="color:var(--accent);text-decoration:none">${c.ip||''} ›</a>`}
+      <span class=nm title="double-click to name" data-name="${c.serial}" style="cursor:text">${c.name?esc(c.name)+' <span class=muted style="font-weight:500">'+short(c.serial)+'</span>':short(c.serial)}${c.isMe?' · this one':''}<div class=muted style="font-size:11px;font-weight:500" data-live="${c.serial}"></div></span>
+      <span class=mt>${c.role||''} · ${c.activeSource?c.activeSource+' · ':''}${c.calibrated?'':'uncalibrated · '}${c.isMe?(c.ip||''):`<a href="http://${c.wired_ip||c.ip}:8080/" style="color:var(--accent);text-decoration:none">${c.ip||''} ›</a>`}
       <button class=srcbtn data-ping="${c.serial}" style="flex:none;min-width:0;padding:3px 9px;font-size:11px;margin-left:8px">ping</button></span></div>`;}).join('');
     $('#fleet').querySelectorAll('[data-ping]').forEach(b=>b.onclick=e=>{e.preventDefault();b.disabled=true;post('/api/ping',{serial:b.dataset.ping}).finally(()=>setTimeout(()=>b.disabled=false,3000));});
     $('#fleet').querySelectorAll('[data-name]').forEach(el=>el.ondblclick=()=>{const cur=(fleet.find(x=>x.serial===el.dataset.name)||{}).name||''; const n=prompt('Name this speaker (empty to clear)',cur); if(n===null)return; post('/api/cell/name',{serial:el.dataset.name,name:n}).then(()=>setTimeout(tick,800));});}
@@ -4479,7 +5144,7 @@ async function tickLed(){
   if(!dragging.silentfade&&tn.silentFade!=null){$('#silentfade').value=Math.round(parseFloat(tn.silentFade)*10);$('#sfv').textContent=parseFloat(tn.silentFade).toFixed(1)+'s';}
   if(!dragging.beatfade&&tn.beatFade!=null){$('#beatfade').value=Math.round(parseFloat(tn.beatFade)*100);$('#bfv').textContent=parseFloat(tn.beatFade).toFixed(2)+'s';}
   // animation buttons
-  $('#ledanims').innerHTML=(s.visions||[]).map(v=>`<button class=srcbtn data-play="${v}">${v}</button>`).join('')||'<span style="color:var(--muted);font-size:12px">no animations</span>';
+  $('#ledanims').innerHTML=(s.visions||[]).map(v=>`<button class=srcbtn data-play="${esc(v)}">${esc(v)}</button>`).join('')||'<span style="color:var(--muted);font-size:12px">no animations</span>';
   $('#ledanims').querySelectorAll('[data-play]').forEach(b=>b.onclick=()=>ledPost('/api/led/anim',{action:'play',name:b.dataset.play}));
   // editor select (preserve current selection + don't clobber textarea mid-edit)
   const sel=$('#visedit');const keep=sel.value;
@@ -4491,7 +5156,7 @@ async function loadVision(){const name=$('#visedit').value;if(!name)return;
 $('#visedit').addEventListener('change',loadVision);
 $('#vissave').onclick=async()=>{const name=$('#visedit').value;
   try{JSON.parse($('#visjson').value);}catch(e){$('#vismsg').textContent='invalid JSON';return;}
-  const r=await fetch('/api/vision',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,content:$('#visjson').value})});
+  const r=await fetch('/api/vision',{method:'POST',headers:TH(),body:JSON.stringify({name,content:$('#visjson').value})});
   $('#vismsg').textContent=r.ok?'saved':'error';setTimeout(()=>$('#vismsg').textContent='',2000);};
 $('#ledapply').onclick=()=>{const[r,g,b]=hexRgb($('#ledcol').value);ledPost('/api/led/color',{r,g,b,w:$('#ledw').value/100});};
 document.querySelectorAll('[data-anim]').forEach(b=>b.onclick=()=>ledPost('/api/led/anim',{action:b.dataset.anim}));
@@ -4599,6 +5264,13 @@ header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
 .btn.sm{padding:5px 10px;font-size:12px;border-radius:9px}.btn:disabled{opacity:.45;cursor:default}
 .btn.danger{border-color:color-mix(in srgb,var(--bad) 50%,var(--line));color:var(--bad)}
 .rowb{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
+.rowb.sw{justify-content:space-between;flex-wrap:nowrap;gap:14px}
+.switch{position:relative;display:inline-block;width:46px;height:26px;flex:none}
+.switch input{opacity:0;width:0;height:0}
+.switch span{position:absolute;inset:0;border-radius:13px;background:var(--line);transition:background .15s}
+.switch span:before{content:"";position:absolute;width:20px;height:20px;left:3px;top:3px;border-radius:50%;background:#fff;transition:transform .15s}
+.switch input:checked+span{background:var(--live)}
+.switch input:checked+span:before{transform:translateX(20px)}
 input[type=text],input[type=password],input[type=number],select{font:inherit;font-size:13px;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--surface2);color:var(--text);min-width:0}
 input[type=number]{width:74px}
 .list{display:grid;gap:8px}
@@ -4690,8 +5362,24 @@ window.cycleTheme=function(){t=T[(T.indexOf(t)+1)%T.length];try{localStorage.set
     <button class="btn" id=calib3 title="Three measurement passes combined robustly — about three times as long, much steadier layout">Soundcheck ×3</button>
     <span class=muted id=calstate></span></div>
   <div class=log id=callog style="display:none"></div>
+  <table id=calpairs class=k style="display:none;margin-top:6px;font-size:12px"></table>
   <div style="overflow:auto;margin-top:10px"><table id=cells></table></div>
   <p class=hint>Soundcheck plays chirps from every speaker in turn (about a minute per speaker) and measures positions, orientation, walls and room EQ on the speakers themselves; playback is paused meanwhile. Keep the room quiet. <b>×3</b> runs it three times and solves the layout from the median of the measurements — use it when a single run looks off. Results are stored by this firmware — no Syng account involved.</p>
+</div>
+
+<div class=card id=apcard><h2>AIRPLAY &amp; ATMOS <span><button class="btn sm" id=aprefresh>Refresh</button></span></h2>
+  <div id=apnow class=muted>…</div>
+  <div style="margin-top:12px"><b>Height</b> <span id=aphp class=muted></span>
+    <div class=muted style="font-size:12px;margin-top:2px">Atmos' four overhead channels always play. With every speaker on the floor layer they are spread around the
+      ring at ear height; mark the speakers that sit up high and Syng lifts the height channels onto them (it turns height processing on by itself).</div></div>
+  <div id=aplayers style="display:flex;flex-direction:column;gap:6px;margin:8px 0 6px"></div>
+  <div class="rowb sw"><div><b>Fill surround channels</b><div class=muted style="font-size:12px">Syng's <code>enableBeyondStereoDuplication</code> — nothing in the firmware or Syng's apps sets it; an experiment</div></div>
+    <label class=switch><input type=checkbox id=apfill><span></span></label></div>
+  <div class="rowb sw"><div><b>Quick AirPlay recovery</b><div class=muted style="font-size:12px">If AirPlay crashes, it's back in ~3 s instead of a 2-minute core dump (<span id=apqr>…</span>)</div></div>
+    <label class=switch><input type=checkbox id=apquick><span></span></label></div>
+  <p class=hint>The switches apply to every speaker on the network at once. Syng's own badge says "Stereo" even during Atmos — the
+    line at the top reads the real channel layout instead.</p>
+  <div id=apcells class=muted style="font-size:12px;margin-top:6px"></div>
 </div>
 
 <div class=card id=streamcard><h2>GROUP STREAM <span><button class="btn sm" id=strefresh>Refresh</button></span></h2>
@@ -4749,8 +5437,8 @@ let ME=null, ROOM=null, DISC=null, dirty=false, primaryIp=null;
 const toast=(m,bad)=>{const t=$('#toast');t.textContent=m;t.style.borderColor=bad?'var(--bad)':'var(--line)';t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),3200);};
 async function api(path,body,ip){ // ip: another cell (relayed through this one so it works over the USB link)
   let r;
-  if(ip&&ME&&ip!==ME.ip) r=await fetch('/api/relay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,path,method:body?'POST':'GET',body})});
-  else r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:undefined);
+  if(ip&&ME&&ip!==ME.ip) r=await fetch('/api/relay',{method:'POST',headers:TH(),body:JSON.stringify({ip,path,method:body?'POST':'GET',body})});
+  else r=await fetch(path,body?{method:'POST',headers:TH(),body:JSON.stringify(body)}:undefined);
   const j=await r.json().catch(()=>({}));
   if(!r.ok||j.error){throw new Error(j.error||('HTTP '+r.status));}
   return j;
@@ -4779,7 +5467,7 @@ async function loadWifi(scan){
   const w=scan?{services:(await api('/api/wifi/scan')).services}:await api('/api/wifi');
   const cur=(w.services||[]).find(s=>s.connected);
   $('#netstatus').innerHTML=`${cur?'Connected to <b>'+cur.name+'</b>':'<span class=warn>Not connected to Wi-Fi</span>'} · address ${ME.ip||'—'}`+((ME.ips||[]).length>1?' <span class=muted>('+ME.ips.map(a=>a[0]+' '+a[1]).join(', ')+')</span>':'');
-  $('#wifilist').innerHTML=(w.services||[]).map(s=>`<div class=item><span class=grow><b>${s.name||'(hidden)'}</b> <span class=k>${s.security}${s.connected?' · connected':''}${s.autoconnect?' · saved':''}</span></span>
+  $('#wifilist').innerHTML=(w.services||[]).map(s=>`<div class=item><span class=grow><b>${esc(s.name)||'(hidden)'}</b> <span class=k>${s.security}${s.connected?' · connected':''}${s.autoconnect?' · saved':''}</span></span>
     ${s.connected?'':`<button class="btn sm" data-c="${s.name}">Connect</button>`}${s.autoconnect?`<button class="btn sm" data-f="${s.name}">Forget</button>`:''}</div>`).join('')||'<div class=muted>No networks listed — press Scan Wi-Fi.</div>';
   $('#wifilist').querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>wifiJoin(b.dataset.c));
   $('#wifilist').querySelectorAll('[data-f]').forEach(b=>b.onclick=async()=>{await api('/api/wifi/forget',{ssid:b.dataset.f});loadWifi();});
@@ -4798,15 +5486,21 @@ async function loadDiscover(){
   $('#rooms').textContent='scanning the network…';
   try{DISC=await api('/api/discover');}catch(e){$('#rooms').textContent='scan failed: '+e.message;return;}
   const rooms=DISC.rooms||[];
+  const myPrimary=(rooms.find(r=>ME.room_id&&r.room_id===ME.room_id)||{}).primary_ip||primaryIp;   // where "add to my room" sends them
   $('#rooms').innerHTML=rooms.map(r=>{
     const mine=ME.room_id&&r.room_id===ME.room_id; const noRoom=r.room_id==='?';
     const cells=r.cells.map(c=>`<div class="item ${c.isMe?'me':''}"><span class=grow><b>${c.name||('Cell '+short(c.serial))}</b> <span class=k>${c.name?short(c.serial)+' · ':''}${c.ip}${c.isMe?' · this speaker':''}${c.stock?' · stock firmware (no agent)':''}</span></span>
-       <span class=k>${c.role||''}${c.calibrated?' · calibrated':''}</span>${c.agent?`<button class="btn sm" data-ping="${c.serial}">ping</button>`:''}${c.isMe||!c.agent?'':`<a class="btn sm" href="http://${c.ip}:8080/setup">open</a>`}</div>`).join('');
+       <span class=k>${c.role||''}${c.calibrated?' · calibrated':''}</span>${c.agent?`<button class="btn sm" data-ping="${c.serial}">ping</button>`:''}${(!mine&&c.agent&&myPrimary)?`<button class="btn sm" data-pull="${c.ip}" title="Ask this speaker to join your room">add to my room</button>`:''}${c.isMe||!c.agent?'':`<a class="btn sm" href="http://${c.wired_ip||c.ip}:8080/setup">open</a>`}</div>`).join('');
     const title=noRoom?'Not in a room':(r.room_name||'(unnamed room)');
-    const btn=(!mine&&!noRoom&&r.primary_ip)?`<button class="btn sm pri" data-join="${r.primary_ip}">Join this room with this speaker</button>`:(mine?'<small>your room</small>':'');
+    const btn=(!mine&&!noRoom&&r.primary_ip)?`<button class="btn sm pri" data-join="${r.primary_ip}">Join this room with this speaker</button>`:(mine?((ME.members||[]).length>1?'<button class="btn sm" id=leaveroom>Leave this room</button>':'<small>your room</small>'):'');
     return `<div class=room><h3><span>${title} <small>${r.cells.length} speaker${r.cells.length>1?'s':''}</small></span>${btn}</h3><div class=list>${cells}</div></div>`;
   }).join('')||'<div class=muted>No other speakers found.</div>';
   $('#rooms').querySelectorAll('[data-ping]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{await api('/api/ping',{serial:b.dataset.ping});}catch(e){toast('Ping: '+e.message,true);}setTimeout(()=>b.disabled=false,3000);});
+  const lv=$('#leaveroom'); if(lv) lv.onclick=async()=>{ if(!confirm('Leave "'+(ME.room_name||'this room')+'"? This speaker goes back to a room of its own; the others stay together.'))return; lv.disabled=true;
+    try{await api('/api/room/leave',{});toast('Left the room');}catch(e){toast('Leave failed: '+e.message,true);} setTimeout(refreshAll,2500); };
+  $('#rooms').querySelectorAll('[data-pull]').forEach(b=>b.onclick=async()=>{ const ip=b.dataset.pull; if(!confirm('Ask '+ip+' to join your room? It keeps playing once this primary admits it.'))return; b.disabled=true;toast('Asking…');
+    try{const r=await api('/api/room/join',{ip:myPrimary},ip);toast(r.already?'Already in this room':'Joined · '+(r.members||[]).length+' speakers');}catch(e){toast('Join failed: '+e.message,true);}
+    setTimeout(refreshAll,2500); });
   $('#rooms').querySelectorAll('[data-join]').forEach(b=>b.onclick=async()=>{
     if(!confirm('Join the room via '+b.dataset.join+'? This speaker becomes a secondary there'+((ME.members||[]).length>1?' and leaves "'+ME.room_name+'"':'')+'.'))return;
     b.disabled=true;toast('Joining…');
@@ -5017,7 +5711,9 @@ $('#calib3').onclick=async()=>{
 async function pollCal(){
   clearTimeout(calTimer);
   try{const s=await api('/api/calibration/status',null,primaryIp); $('#callog').style.display=(s.log&&s.log.length)?'block':'none'; $('#callog').textContent=(s.log||[]).join('\n'); $('#callog').scrollTop=1e6;
-    $('#calstate').textContent=s.running?('running'+(s.runs>1?' · pass '+s.run+' of '+s.runs:'')+' · '+Math.round((Date.now()/1000-s.started))+' s'):(s.finished?(s.ok?'last Soundcheck ok'+(s.combine?' · ×'+s.combine.runs+' residual '+s.combine.residual.toFixed(3):''):'last Soundcheck failed'):'');
+    $('#calstate').textContent=s.running?('running'+(s.runs>1?' · pass '+s.run+' of '+s.runs:'')+' · '+Math.round((Date.now()/1000-s.started))+' s'):(s.finished?(s.ok?'last Soundcheck ok'+(s.combine?' · ×'+s.combine.runs+' residual '+s.combine.residual.toFixed(3)+(s.combine.reference?' · reference '+short(s.combine.reference):''):''):'last Soundcheck failed'):'');
+    const pr=$('#calpairs'); if(pr){const pairs=(s.combine&&s.combine.pairs)||[]; pr.style.display=pairs.length?'table':'none';
+      pr.innerHTML=pairs.map(p=>`<tr><td>${short(p.a)}–${short(p.b)}</td><td>${(+p.distance_m).toFixed(2)} m</td><td>±${(+p.spread_m||0).toFixed(2)}</td><td>rec ${(+p.reciprocity_m||0).toFixed(2)}</td></tr>`).join('');}
     $('#calib').disabled=!!s.running;
     if(s.running) calTimer=setTimeout(pollCal,2000); else if(s.finished&&Date.now()/1000-s.finished<30){loadRoom();}
   }catch(e){}
@@ -5140,7 +5836,7 @@ function nbShow(){
 async function loadNB(){
   try{NB=await api('/api/netbuffer');
     const cs=NB.cells.filter(c=>c.ms!=null);
-    $('#nbinfo').innerHTML=NB.mixed?('Not the same on every speaker: '+cs.map(c=>`${c.name||short(c.serial)} ${c.ms} ms`).join(' · '))
+    $('#nbinfo').innerHTML=NB.mixed?('Not the same on every speaker: '+cs.map(c=>`${c.name?esc(c.name):short(c.serial)} ${c.ms} ms`).join(' · '))
       :`${NB.ms} ms on ${cs.length} speaker${cs.length==1?'':'s'}${cs.length&&cs[0].dualPath?' · two paths (Wi-Fi + SyFi)':''}`;
     if(NB.ms!=null){$('#nbms').value=NB.ms;} nbShow();
   }catch(e){$('#nbinfo').textContent='n/a: '+e.message;}
@@ -5174,7 +5870,7 @@ function drawUND(){
   mins.forEach((s,i)=>{let y=mh;s.forEach((v,ci)=>{if(!v)return;const hh=v/mm*(mh-4);x.fillStyle=UCOL[ci%UCOL.length];x.fillRect(i*mw+.5,y-hh,Math.max(1,mw-1),hh);y-=hh;});});
   x.fillStyle=css('--muted');x.font='10px system-ui';[0,15,30,45].forEach(m=>x.fillText(':'+String(m).padStart(2,'0'),m*mw+1,h-2));
   const top=mins.map((s,i)=>[s.reduce((a,b)=>a+b,0),i]).sort((a,b)=>b[0]-a[0])[0];
-  $('#undleg').innerHTML=cells.map((c,ci)=>`<span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${UCOL[ci%UCOL.length]};margin-right:5px"></span>${c.name||'Cell '+short(c.serial)} · ${c.events.filter(e=>e.t>=t0).length}${c.role==='primary'?' (sender)':''}</span>`).join('')
+  $('#undleg').innerHTML=cells.map((c,ci)=>`<span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${UCOL[ci%UCOL.length]};margin-right:5px"></span>${c.name?esc(c.name):'Cell '+short(c.serial)} · ${c.events.filter(e=>e.t>=t0).length}${c.role==='primary'?' (sender)':''}</span>`).join('')
     +(top&&top[0]>=3?`<span style="flex-basis:100%">Most at <b>:${String(top[1]).padStart(2,'0')}</b> past the hour (${top[0]} of ${cells.reduce((a,c)=>a+c.events.filter(e=>e.t>=t0).length,0)})</span>`:'');
 }
 async function loadUND(h){UNDH=h||UNDH;$('#und24').classList.toggle('pri',UNDH===24);$('#und7').classList.toggle('pri',UNDH!==24);
@@ -5182,21 +5878,51 @@ async function loadUND(h){UNDH=h||UNDH;$('#und24').classList.toggle('pri',UNDH==
 $('#und24').onclick=()=>loadUND(24); $('#und7').onclick=()=>loadUND(168);
 $('#strefresh').onclick=()=>{loadNB();loadUND();};
 window.addEventListener('resize',()=>drawUND());
-async function refreshAll(){await loadMe();loadWifi();loadRoom();loadDiscover();loadHK();loadRing();loadFw();loadNB();loadUND(24);}
+// ---- AirPlay & Atmos ----
+let AP=null;
+async function loadAP(){
+  try{AP=await api('/api/airplay');
+    const cs=AP.cells.filter(c=>!c.error||c.settings);
+    const me=cs.find(c=>c.active)||cs[0]||{};
+    const playing=cs.filter(c=>c.active);
+    $('#apnow').innerHTML=playing.length?playing.map(c=>`<b>${esc(c.format)||'—'}</b> · ${c.channels} ch${c.badge&&c.format&&c.badge!==c.format?` <span class=muted>(Syng's badge: ${esc(c.badge)})</span>`:''} on ${c.name?esc(c.name):short(c.serial)}`).join('<br>'):'Nothing is playing over AirPlay right now';
+    const st=(me.settings||{}); $('#apfill').checked=!!st.fill; $('#apquick').checked=!!st.quick_recover;
+    const qr=cs.reduce((a,c)=>{const x=c.quick_recover||{};a.n+=x.count||0;if(x.last&&x.last>a.t)a.t=x.last;return a;},{n:0,t:0});
+    $('#apqr').textContent=qr.n?`recovered ${qr.n}×${qr.t?' · last '+new Date(qr.t*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}):''}`:'no crashes yet';
+    $('#aphp').textContent=AP.height_processing==null?'':(AP.height_processing?'· height processing on (set by Syng)':'· height processing off (set by Syng: no speaker is up high)');
+    const HL=AP.height_layers||{}, names={}; cs.forEach(c=>{if(c.serial)names[c.serial]=c.name||'Cell '+short(c.serial);});
+    $('#aplayers').innerHTML=Object.keys(HL).map(s=>`<label class="rowb sw" style="margin:0"><span>${names[s]?esc(names[s]):'Cell '+short(s)}</span>
+      <select data-hl="${s}"><option value=0 ${HL[s]==0?'selected':''}>Floor / shelf</option><option value=1 ${HL[s]==1?'selected':''}>Up high</option><option value=2 ${HL[s]==2?'selected':''}>Ceiling</option></select></label>`).join('');
+    document.querySelectorAll('[data-hl]').forEach(el=>el.onchange=async()=>{const b={cells:{}};b.cells[el.dataset.hl]={height_layer:+el.value};
+      try{await api('/api/room/layout',b,AP.primary_ip||primaryIp);toast('Height layer saved');setTimeout(loadAP,2500);}catch(e){toast(e.message,true);loadAP();}});
+    $('#apcells').innerHTML=cs.map(c=>`${c.name?esc(c.name):short(c.serial)}${c.role?' ('+esc(c.role)+')':''}: `+(c.height==null?'AirPlay runs on the primary':`height processing ${c.height?'on':'off'} · fill ${c.fill?'on':'off'}`)+` · quick recovery ${c.quick_recover&&c.quick_recover.on?'on':'off'}`).join('<br>');
+  }catch(e){$('#apnow').textContent='n/a: '+e.message;}
+}
+async function apSet(k,v){try{const b={};b[k]=v;await api('/api/airplay',b);toast((k==='fill'?'Fill surround':'Quick recovery')+(v?' on':' off')+' — every speaker');setTimeout(loadAP,1500);}catch(e){toast(e.message,true);loadAP();}}
+$('#apfill').onchange=e=>apSet('fill',e.target.checked);
+$('#apquick').onchange=e=>apSet('quick_recover',e.target.checked);
+$('#aprefresh').onclick=loadAP;
+async function refreshAll(){await loadMe();loadWifi();loadRoom();loadDiscover();loadHK();loadRing();loadFw();loadNB();loadUND(24);loadAP();}
 window.addEventListener('resize',sizeCanvas);
 refreshAll();
 </script></body></html>
 """
 
 class H(BaseHTTPRequestHandler):
+    # Responsiveness: HTTP/1.1 keep-alive lets the apps reuse one TCP connection for the volume/puck stream of
+    # POSTs instead of a handshake + handler thread per call. Every response here sets Content-Length (or is
+    # an endless SSE stream that ends with the connection).
+    protocol_version = "HTTP/1.1"
     def log_message(self, *a): pass
     def _send(self, code, body, ctype):
         b = body.encode() if isinstance(body, str) else body
         self.send_response(code); self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(b))); self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(b)))        # §1.6: no wildcard CORS — dashboard is same-origin
         self.end_headers(); self.wfile.write(b)
     def _json(self, code, obj): self._send(code, json.dumps(obj), "application/json")
     def do_GET(self):
+        if not (_origin_ok(self.headers) and _host_ok(self.headers)):
+            self._send(403, "forbidden", "text/plain"); return
         try:
             if self.path.startswith("/api/state"): self._json(200, cached("state", 0.9, collect))
             elif self.path.startswith("/api/stats"): self._json(200, stats())
@@ -5205,18 +5931,35 @@ class H(BaseHTTPRequestHandler):
                 # Server-Sent Events: one frame per feed packet (~30/s); keepalives when idle; ends when the client goes away
                 self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.send_header("Cache-Control", "no-store")
                 self.send_header("Connection", "keep-alive"); self.end_headers()
+                # b75: no Nagle on the stream. Each frame is one small write; with Nagle on, a frame waits for the
+                # client's (delayed, up to ~200 ms) ACK of the previous one, so they arrived in bursts of 3–5 and the
+                # apps' band ring stuttered at a smooth frame rate.
+                try: self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except Exception: pass
                 seen = -1; idle = 0
                 while True:
                     with VIZ_COND:
                         if VIZ_SEQ[0] == seen: VIZ_COND.wait(0.5)
                         cur = VIZ_SEQ[0]
+                        backlog = [f for f in VIZ_RING if f.get("seq", 0) > seen] if 0 <= seen < cur else []
                     if cur == seen:
                         idle += 1
                         if idle % 4 == 0:
                             self.wfile.write(("data: %s\n\n" % json.dumps(viz_frame())).encode()); self.wfile.flush()
                         continue
                     idle = 0; seen = cur
-                    self.wfile.write(("data: %s\n\n" % json.dumps(viz_frame())).encode()); self.wfile.flush()
+                    # every frame since the last write, each with its own stamp (`t`), so a client that plays them
+                    # out by time sees an even 30 Hz even when this thread or the network hiccups
+                    if 1 < len(backlog) <= 12 and time.time() - LAST_VIZ.get("t", 0) < 0.6:
+                        VIZ_WANT[0] = time.time(); led = led_live_color(); out = []
+                        for f in backlog:
+                            d = dict(f); d["live"] = True
+                            if led: d["led"] = led
+                            out.append("data: %s\n\n" % json.dumps(d))
+                        self.wfile.write("".join(out).encode())
+                    else:
+                        self.wfile.write(("data: %s\n\n" % json.dumps(viz_frame())).encode())
+                    self.wfile.flush()
             elif self.path.startswith("/api/viz/status"):
                 st = get_state()
                 self._json(200, {"primary": is_primary_cell(st), "ledPort": VIZ_LED_PORT,
@@ -5249,12 +5992,21 @@ class H(BaseHTTPRequestHandler):
                 url = ("http://%s:%d%s" % (rip, PORT, self.path)) if rip else artwork_url((q.get("source") or ["airplay2"])[0])
                 if not url: self._send(404, "no artwork", "text/plain"); return
                 try:
-                    with urllib.request.urlopen(url, timeout=5) as r:
-                        data = r.read(); ctype = r.headers.get("Content-Type", "image/jpeg")
+                    # AirPlay covers arrive as a (percent-encoded) data: URI — urlopen can't open those, which is
+                    # why artwork never reached the apps. Decode it here; http(s) URLs (Spotify/TIDAL) are fetched.
+                    u = urllib.parse.unquote(url) if url.startswith("data%3A") else url
+                    if u.startswith("data:"):
+                        head, _, payload = u.partition(",")
+                        ctype = head[5:].split(";")[0] or "image/jpeg"
+                        import base64
+                        data = base64.b64decode(payload) if ";base64" in head else urllib.parse.unquote_to_bytes(payload)
+                    else:
+                        with urllib.request.urlopen(u, timeout=5) as r:
+                            data = r.read(); ctype = r.headers.get("Content-Type", "image/jpeg")
                     self.send_response(200); self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(len(data)))
                     self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(data)
                 except Exception as e:
-                    self._send(502, "artwork fetch failed: %s" % e, "text/plain")
+                    self._send(502, "artwork fetch failed: %s" % str(e)[:120], "text/plain")
             else:
                 r = lc_get(self.path)
                 if r is None: self._send(404, "not found", "text/plain")
@@ -5265,9 +6017,18 @@ class H(BaseHTTPRequestHandler):
             try: self._json(500, {"error": traceback.format_exc().splitlines()[-1]})
             except Exception: pass
     def do_OPTIONS(self):
-        self.send_response(204); self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS"); self.send_header("Access-Control-Allow-Headers", "Content-Type"); self.end_headers()
+        self.send_response(204); self.send_header("Content-Length", "0")
+        o = self.headers.get("Origin")           # §1.6: reflect only a verified same-cell origin, never "*"
+        if o and _origin_ok(self.headers):
+            self.send_header("Access-Control-Allow-Origin", o)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Troubadour-Token")
+        self.end_headers()
     def do_POST(self):
+        if not (_origin_ok(self.headers) and _host_ok(self.headers)):
+            self._send(403, "forbidden", "text/plain"); return
+        if not _token_ok(self):
+            self._send(401, "unauthorized", "text/plain"); return
         if self.path.startswith("/api/firmware/upload"):
             try:
                 n = int(self.headers.get("Content-Length", 0)) or None
@@ -5281,12 +6042,17 @@ class H(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(n) or b"{}")
             if isinstance(body, list): body = {"results": body}   # pycalibrator PUTs a bare list
+            try: body["_src"] = self.client_address[0]             # §1.7: the real TCP peer, overwriting any spoofed value
+            except Exception: pass
             p = self.path
             grp = (not body.get("_local")) and body.get("scope") == "group"
-            rip = relay_ip() if (not body.get("_local") and any(p.startswith(x) for x in RELAY_PATHS)) else None
+            # §1.10: relay to the primary with a *distinct* marker. The old code reused _local, which link/
+            # soundmode read as "apply here only" — so a relayed user action never reached the other members.
+            relayed_in = bool(body.get("_relayed"))
+            rip = relay_ip() if (not body.get("_local") and not relayed_in and any(p.startswith(x) for x in RELAY_PATHS)) else None
             if rip:
                 try:
-                    r = agent_post(rip, p, dict(body, _local=True), timeout=8); log("RELAY %s -> %s" % (p, rip)); self._json(200, dict(r, relayed=rip) if isinstance(r, dict) else {"ok": True, "relayed": rip}); return
+                    r = agent_post(rip, p, dict(body, _relayed=True), timeout=8); log("RELAY %s -> %s" % (p, rip)); self._json(200, dict(r, relayed=rip) if isinstance(r, dict) else {"ok": True, "relayed": rip}); return
                 except Exception as e:
                     self._json(502, {"error": "primary %s unreachable: %s" % (rip, e)}); return
             if p.startswith("/api/tone"):
@@ -5334,7 +6100,7 @@ class H(BaseHTTPRequestHandler):
             elif p.startswith("/api/led/tune"):
                 pairs = [(flag, str(body[k])) for k, flag in
                          (("beatSens", "--beat-sens"), ("floor", "--floor"), ("cycle", "--cycle"),
-                          ("silentFade", "--silent-fade"), ("beatFade", "--beat-fade"))
+                          ("silentFade", "--silent-fade"), ("beatFade", "--beat-fade"), ("idle", "--idle"))
                          if body.get(k) is not None]
                 if pairs: set_led_flags(pairs)
                 if grp: fanout(p, body)
@@ -5378,7 +6144,9 @@ class H(BaseHTTPRequestHandler):
             except Exception: pass
 
 def main():
-    sys.stderr.write("syng-agent (b62) on http://0.0.0.0:%d\n" % PORT)
+    sys.stderr.write("syng-agent (b74) on http://0.0.0.0:%d\n" % PORT)
+    try: sys.setswitchinterval(0.002)      # hand the GIL over faster (default 5 ms) so a control reply isn't held up
+    except Exception: pass
     threading.Thread(target=viz_fanout_loop, daemon=True).start()
     threading.Thread(target=viz_web_loop, daemon=True).start()
     lc_start()

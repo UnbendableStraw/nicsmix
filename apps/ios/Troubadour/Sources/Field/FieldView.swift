@@ -2,6 +2,13 @@ import SwiftUI
 import MetalKit
 import UIKit
 
+#if os(tvOS)
+/// No haptics on the Apple TV (and nothing to touch).
+enum Haptics {
+    static func tap(_ intensity: Double = 0.6) {}
+    static func select() {}
+}
+#else
 enum Haptics {
     private static let impact = UIImpactFeedbackGenerator(style: .light)
     private static let selection = UISelectionFeedbackGenerator()
@@ -11,11 +18,15 @@ enum Haptics {
     }
     static func select() { selection.prepare(); selection.selectionChanged() }
 }
+#endif
 
 /// The Metal view itself. Touches go straight to the model here rather than through SwiftUI
 /// gestures: a drag on the puck has to track the finger with no recognizer delay at all.
 final class FieldMTKView: MTKView {
     weak var model: FieldModel?
+    #if os(tvOS)
+    func install() {}                              // the Apple TV only watches; the remote drives the app, not the field
+    #else
     private var dragging: UITouch?
 
     func install() {
@@ -74,12 +85,15 @@ final class FieldMTKView: MTKView {
     @objc private func onDoubleTap(_ g: UITapGestureRecognizer) {
         model?.centrePuck()
     }
+    #endif
 }
 
+#if !os(tvOS)
 extension FieldMTKView: UIGestureRecognizerDelegate {
     func gestureRecognizer(_ g: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 }
+#endif
 
 struct FieldCanvas: UIViewRepresentable {
     let model: FieldModel
@@ -99,7 +113,14 @@ struct FieldCanvas: UIViewRepresentable {
         v.layer.isOpaque = true
         v.enableSetNeedsDisplay = false
         v.isPaused = false
+        #if os(tvOS)
+        // A 4K Apple TV's drawable is 3840×2160; the field is soft gradients and glitter, so 1080p upscaled by the TV
+        // costs a quarter of the GPU time for every full-screen pass and looks the same from the couch.
+        v.contentScaleFactor = 1
+        v.preferredFramesPerSecond = 60
+        #else
         v.preferredFramesPerSecond = 120          // ProMotion; the system caps it on other screens
+        #endif
         v.autoResizeDrawable = true
         v.install()
         if let r = FieldRenderer(model: model, pixelFormat: v.colorPixelFormat) {
@@ -114,6 +135,7 @@ struct FieldCanvas: UIViewRepresentable {
     }
 }
 
+#if !os(tvOS)
 /// While the field is on screen, nothing the navigation controller owns may turn a drag into "back to
 /// Rooms": not the edge swipe, and not the full-screen swipe-back recent iOS added (a horizontal drag
 /// anywhere in the content — which is what kept catching the puck). Every pan recogniser on the
@@ -168,3 +190,4 @@ struct DisablesSwipeBack: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> Holder { Holder() }
     func updateUIViewController(_ c: Holder, context: Context) {}
 }
+#endif

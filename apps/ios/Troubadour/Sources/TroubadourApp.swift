@@ -41,7 +41,7 @@ struct RootView: View {
     }
     private func pushLastRoom() {
         guard openLastRoom, let ip = Shared.agentIP,
-              let r = fleet.rooms.first(where: { $0.agent?.ip == ip }) else { return }
+              let r = fleet.rooms.first(where: { $0.answers(ip) }) else { return }
         openLastRoom = false; path = [r]; padSelection = r.id
     }
 }

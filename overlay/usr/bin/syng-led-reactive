@@ -12,7 +12,7 @@
 # ledmanager is stopped while this runs and restarted on exit.
 #
 # Usage:
-#   syng-led-reactive [--mode vu|spectrum|beat|rainbow|pulse|party|flow|groove|bloom|shimmer]
+#   syng-led-reactive [--mode vu|spectrum|beat|rainbow|pulse|party|flow|groove|bloom|shimmer|room]
 #                     [--source playback|mic|viz] [--ports "p1,p2"]
 #                     [--fps 60] [--gain 1.0] [--rate 48000] [--period 22767]
 #                     [--viz-port 7249] [--debug] [--no-manage]
@@ -23,6 +23,11 @@
 #   this feed out to every cell, so all grouped cells react in sync to the real
 #   audio with NO microphone. The 88-bin spectrum is mapped to the same
 #   bass/mid/treble/overall envelope the JACK path produces, so every mode works.
+# --mode room (use with --source mic): reacts to sound IN THE ROOM through the Cell's three mics — voices,
+#   claps, other speakers, its own music — and when the room is quiet it keeps slowly cross-fading between
+#   colours at a soft, breathing glow (--idle) instead of going dark. The mics have very low gain (a quiet room
+#   reads about -88 dBFS, the Cell's own identify chime about -63), so mic levels are NOT peak-normalised: each
+#   band is measured in dB above a slowly tracked noise floor, gated and mapped over --mic-range dB.
 # Python 3.7 / numpy compatible.
 
 import argparse, math, os, random, select, signal, socket, struct, subprocess, sys, threading, time
@@ -104,8 +109,11 @@ def hsv_to_rgb(h, s, v):
     return [(v,t,p),(q,v,p),(p,v,t),(p,q,v),(t,p,v),(v,p,q)][i]
 
 class Bands:
-    def __init__(self, rate, n, gain):
+    def __init__(self, rate, n, gain, mic=False, mic_range=30.0, mic_gate=7.0):
         self.rate = rate; self.n = n; self.gain = gain
+        self.mic = mic; self.mic_range = mic_range; self.mic_gate = mic_gate
+        self.floor = None                      # per-channel noise floor in dB (bass, mid, treble, rms)
+        self.pw = None                         # smoothed power per channel (noise in one 17 ms frame swings ±5 dB)
         self.win = np.hanning(n).astype(np.float32)
         self.ring = np.zeros(n, dtype=np.float32)
         freqs = np.fft.rfftfreq(n, 1.0 / rate)
@@ -130,11 +138,10 @@ class Bands:
                         mag[self.tre].mean() if self.tre.any() else 0,
                         rms], dtype=np.float32)
         raw[:3] *= self.gain
-        self.agc_band = max(self.agc_band * 0.999, float(raw[:3].max()), 1e-3)
-        self.agc_rms = max(self.agc_rms * 0.999, float(raw[3]), 1e-3)
-        norm = np.empty(4, dtype=np.float32)
-        norm[:3] = np.clip(raw[:3] / self.agc_band, 0, 1)
-        norm[3] = min(1.0, raw[3] / self.agc_rms)
+        if self.mic:
+            norm = self._mic_norm(raw, k)
+        else:
+            norm = self._agc_norm(raw)
         atk, dec = 0.6, 0.12
         for i in range(4):
             a = atk if norm[i] > self.env[i] else dec
@@ -142,6 +149,35 @@ class Bands:
         flux = max(0.0, float(self.env[0]) - self.prev_bass)
         self.prev_bass = float(self.env[0])
         return self.env, flux
+
+    def _mic_norm(self, raw, k):
+        """dB above a tracked noise floor. The floor follows quiet stretches down quickly and creeps up only
+        0.15 dB/s, so a fan or AC switching on is absorbed within a minute or two while music or talking (which
+        keeps dipping back to the floor between sounds) is not. The rms floor is never allowed above -55 dBFS,
+        so even hours of continuous loud sound can't teach it that loud is 'quiet'."""
+        dt = max(1, k) / float(self.rate)
+        p = np.maximum(raw.astype(np.float64), 1e-9) ** 2
+        # attack fast (sounds still read at once), release over ~0.12 s: tames frame-to-frame noise swings so the
+        # floor tracker settles on the noise level itself instead of its dips
+        if self.pw is None: self.pw = p.copy()
+        up = p > self.pw
+        self.pw = np.where(up, self.pw + (p - self.pw) * min(1.0, dt / 0.02), self.pw + (p - self.pw) * min(1.0, dt / 0.12))
+        db = 10.0 * np.log10(self.pw)
+        if self.floor is None:
+            self.floor = db.copy()
+        down = db < self.floor
+        self.floor = np.where(down, self.floor + (db - self.floor) * min(1.0, dt * 1.5), self.floor + 0.15 * dt)
+        self.floor[3] = min(self.floor[3], -55.0)
+        lvl = (db - self.floor - self.mic_gate) / self.mic_range
+        return np.clip(lvl, 0.0, 1.0).astype(np.float32)
+
+    def _agc_norm(self, raw):
+        self.agc_band = max(self.agc_band * 0.999, float(raw[:3].max()), 1e-3)
+        self.agc_rms = max(self.agc_rms * 0.999, float(raw[3]), 1e-3)
+        norm = np.empty(4, dtype=np.float32)
+        norm[:3] = np.clip(raw[:3] / self.agc_band, 0, 1)
+        norm[3] = min(1.0, raw[3] / self.agc_rms)
+        return norm
 
 def _hue_lerp(a, b, t):
     """Blend hue a->b the short way around the wheel; t in 0..1 (no dip to dark)."""
@@ -214,6 +250,8 @@ def render(mode, env, flux, state, now, cfg):
         state["flash"] = state.get("flash", 0.0) * 0.82
         r, g, b = hsv_to_rgb(state.get("hue", 0.0), 1.0, state["flash"])
         return (r, g, b, 0)
+    if mode == "room":
+        return render_room(env, flux, state, now, cfg)
     if mode == "bloom":
         return render_bloom(env, flux, state, now, cfg)
     if mode == "shimmer":
@@ -240,6 +278,28 @@ def render(mode, env, flux, state, now, cfg):
     if mode == "groove":
         return render_groove(env, flux, state, now, cfg, hue, flash)
     return (0, 0, 0, 0)
+
+def render_room(env, flux, state, now, cfg):
+    """Room sound through the mics. Quiet: a soft glow that breathes (9 s) and keeps cross-fading to a new colour
+    every --cycle seconds (golden-angle hops, slow --silent-fade). Sound: brightness rises with loudness, a bass
+    hit kicks the hue and pops brightness, bright/high sounds wash the colour toward pastel."""
+    bass, mid, tre, overall = [float(v) for v in env]
+    quiet = overall < 0.04
+    # slow, dreamy fades between colours while the room is quiet; colour kicks only on a real hit (a clap, a kick
+    # drum, a door) — ordinary talking just lifts the brightness
+    c = dict(cfg)
+    c["silent_fade"] = max(cfg.get("silent_fade", 3.0), 6.0)
+    c["beat_sens"] = max(cfg.get("beat_sens", 0.08) * 2.0, 0.18)
+    c["beat_fade"] = max(cfg.get("beat_fade", 0.35), 0.8)
+    hue, flash = update_color(state, now, flux if overall > 0.12 else 0.0, c)
+    idle = cfg.get("idle", 0.3)
+    breathe = 0.5 + 0.5 * math.sin(2.0 * math.pi * now / 9.0)
+    base = idle * (0.75 + 0.25 * breathe)
+    drive = min(1.0, overall * 0.85 + bass * 0.35 + flash * 0.3)
+    v = min(1.0, base + (1.0 - base) * drive)
+    sat = 1.0 - 0.35 * min(1.0, tre * 0.9)
+    r, g, b = hsv_to_rgb(hue, sat, v)
+    return (r, g, b, 0)
 
 def render_groove(env, flux, state, now, cfg, hue, flash):
     """flow's evolving colour, driven by three layers instead of one:
@@ -626,7 +686,7 @@ def run_viz(args, cfg):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", default="pulse",
-                    choices=["vu", "spectrum", "beat", "rainbow", "pulse", "party", "flow", "groove", "bloom", "shimmer"])
+                    choices=["vu", "spectrum", "beat", "rainbow", "pulse", "party", "flow", "groove", "bloom", "shimmer", "room"])
     ap.add_argument("--source", default="playback", choices=["playback", "mic", "viz"])
     ap.add_argument("--viz-port", type=int, default=7249, help="UDP port for the viz feed (--source viz)")
     ap.add_argument("--ports", default="")
@@ -645,13 +705,16 @@ def main():
                     help="flow/pulse/party: seconds to crossfade to the next color when idle")
     ap.add_argument("--beat-fade", type=float, default=0.35,
                     help="flow/pulse/party: seconds to crossfade to the next color on a beat")
+    ap.add_argument("--idle", type=float, default=0.3, help="room: brightness of the quiet-room glow (0-1)")
+    ap.add_argument("--mic-range", type=float, default=30.0, help="mic: dB above the noise floor that reads as full")
+    ap.add_argument("--mic-gate", type=float, default=7.0, help="mic: dB above the noise floor ignored as hiss")
     ap.add_argument("--debug", action="store_true")
     ap.add_argument("--no-manage", action="store_true")
     args = ap.parse_args()
     cfg = {"cycle": args.cycle, "beat_sens": args.beat_sens, "beat_hue": args.beat_hue,
            "floor": args.floor, "palette": args.palette,
            "silent_fade": args.silent_fade, "beat_fade": args.beat_fade,
-           "drift": 0.01, "refractory": 0.15, "flash_decay": 0.85}
+           "drift": 0.01, "refractory": 0.15, "flash_decay": 0.85, "idle": args.idle}
 
     if args.source == "viz":
         return run_viz(args, cfg)
@@ -701,7 +764,8 @@ def main():
         cleanup()
 
     pwm[0] = Pwm(args.period)
-    bands = Bands(args.rate, 1024, args.gain)
+    bands = Bands(args.rate, 1024, args.gain, mic=(args.source == "mic"),
+                  mic_range=args.mic_range, mic_gate=args.mic_gate)
     state = {}
     buf = b""
     last_dbg = 0.0

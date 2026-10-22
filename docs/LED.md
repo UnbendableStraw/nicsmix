@@ -122,3 +122,19 @@ ARGS=--mode pulse --cycle 25 --beat-sens 0.07 --floor 0.08
 primary. Use `--source mic` to get all grouped cells reacting (works, but less
 tight than a direct tap). The clean fix — reading the
 `VisualizationDataBroadcast` feed — is on the [roadmap](ROADMAP.md).
+
+## `room` mode — react to the room through the mics (2026-10-20)
+
+`--mode room --source mic` (the agent sets the source automatically when you pick **Room** in the apps or the
+dashboard; every other mode goes back to the viz feed). It listens to the Cell's three mics, so it reacts to anything in
+the room — voices, claps, other speakers, its own music — and in a quiet room it never goes dark: a soft glow that
+breathes on a 9 s cycle and keeps cross-fading to a new colour (golden-angle hops every `--cycle` s, 6 s fades).
+
+* Talking lifts the brightness without changing colour; a real hit (clap, kick drum, door) pops to full and kicks
+  the colour.
+* The mics have very low gain (quiet room ≈ −88 dBFS, the Cell's identify chime ≈ −63 dBFS), so levels are measured
+  in dB above a tracked noise floor (power smoothed over 0.12 s; floor follows quiet stretches down, creeps up
+  0.15 dB/s, the overall floor is capped at −55 dBFS so continuous loud sound can't become "quiet").
+* Tunables: `--idle` (quiet glow brightness, default 0.3; also `/api/led/tune {"idle": …}`), `--mic-gate` (dB above
+  the floor ignored as hiss, default 7), `--mic-range` (dB above the floor that reads as full, default 30), plus the
+  usual `--cycle`, `--silent-fade`, `--beat-sens`.

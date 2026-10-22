@@ -46,7 +46,7 @@ struct FieldAction: AppIntent {
     init(_ a: String) { action = a }
     func perform() async throws -> some IntentResult {
         guard let ip = Shared.agentIP else { Shared.lastAction = "no room — open one in the app"; return .result() }
-        let a = Agent(ip: ip)
+        let a = Agent(ip: ip, fallback: Shared.agentFallbackIP)
         do {
             let st = try await a.get("/api/state", timeout: 4)
             let f = FieldState(((st["room"] as? [String: Any])?["field"] as? [String: Any]) ?? [:])
@@ -78,7 +78,7 @@ struct LEDAction: AppIntent {
     init(_ m: String) { mode = m }
     func perform() async throws -> some IntentResult {
         guard let ip = Shared.agentIP else { Shared.lastAction = "no room — open one in the app"; return .result() }
-        do { try await Agent(ip: ip).post("/api/led/reactive", ["mode": mode, "scope": "group"], timeout: 20); Shared.note("LED \(mode)", nil) }
+        do { try await Agent(ip: ip, fallback: Shared.agentFallbackIP).post("/api/led/reactive", ["mode": mode, "scope": "group"], timeout: 20); Shared.note("LED \(mode)", nil) }
         catch { Shared.note("LED \(mode)", error) }
         return .result()
     }
@@ -259,7 +259,7 @@ struct AuraProvider: TimelineProvider {
         if !preview {
             snap = await RoomSnapshot.fetch()
             if let ip = Shared.agentIP {
-                let a = Agent(ip: ip)
+                let a = Agent(ip: ip, fallback: Shared.agentFallbackIP)
                 async let st = try? a.get("/api/state", timeout: 4)
                 async let fr = try? a.get("/api/viz/frame", timeout: 4)
                 state = await st; frame = await fr
@@ -431,7 +431,7 @@ struct LEDView: View {
     let snap: RoomSnapshot
     @Environment(\.widgetFamily) var family
     @Environment(\.widgetRenderingMode) var mode
-    static let names: [String: String] = ["pulse": "Pulse", "party": "Party", "flow": "Flow", "groove": "Groove", "bloom": "Bloom", "shimmer": "Shimmer", "spectrum": "Spectrum", "vu": "VU", "beat": "Beat"]
+    static let names: [String: String] = ["pulse": "Pulse", "party": "Party", "flow": "Flow", "groove": "Groove", "bloom": "Bloom", "shimmer": "Shimmer", "spectrum": "Spectrum", "vu": "VU", "beat": "Beat", "room": "Room (mics)"]
     var body: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {

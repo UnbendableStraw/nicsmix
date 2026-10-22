@@ -38,7 +38,7 @@ struct PadRootView: View {
     /// Open something straight away: the room the widgets show, else the first one.
     private func pickDefault() {
         if let s = selection, fleet.rooms.contains(where: { $0.id == s }) { return }
-        selection = fleet.rooms.first(where: { $0.agent?.ip == Shared.agentIP && Shared.agentIP != nil })?.id ?? fleet.rooms.first?.id
+        selection = fleet.rooms.first(where: { $0.answers(Shared.agentIP) })?.id ?? fleet.rooms.first?.id
     }
 
     private var sidebar: some View {
@@ -138,7 +138,7 @@ struct PadRoomView: View {
             .toolbarBackground(.visible, for: .navigationBar)
         }
         .onAppear {
-            Shared.agentIP = room.agent?.ip; Shared.roomName = room.name
+            Shared.remember(room)
             WidgetCenter.shared.reloadAllTimelines()
         }
     }
@@ -151,6 +151,8 @@ struct PadRoomMain: View {
     @StateObject private var m: RoomModel
     @State private var renaming: Cell?
     @State private var newName = ""
+    @State private var spread: Double = 90
+    @State private var spreadDrag = false
 
     init(room: Room) {
         self.room = room
@@ -238,27 +240,52 @@ struct PadRoomMain: View {
                     HStack(spacing: 5) {
                         Circle().fill(f.live ? Theme.live : Theme.muted.opacity(0.4)).frame(width: 7, height: 7)
                         Text(m.state.active?.displayName ?? "idle").font(.caption).foregroundStyle(Theme.muted)
+                        FormatBadge(format: m.state.active?.format)
                     }
+                    if let b = mixLine { Text(b).font(.caption2).foregroundStyle(Theme.muted).lineLimit(1) }
+                    ProgressLine(source: m.state.active)
                 }
                 Spacer(minLength: 0)
             }
             HStack(spacing: 8) {
+                let a = m.state.active, playing = a?.playing == true
                 Button { m.transport("previous") } label: { Image(systemName: "backward.fill") }
                     .buttonStyle(Capsule_()).keyboardShortcut(.leftArrow, modifiers: .command).hoverEffect(.lift)
-                Button { m.transport(m.state.active?.playing == true ? "pause" : "play") } label: {
-                    Image(systemName: m.state.active?.playing == true ? "pause.fill" : "play.fill")
+                    .disabled(a?.can("previous") == false)
+                Button { m.transport(playing ? "pause" : "play") } label: {
+                    Image(systemName: playing ? "pause.fill" : "play.fill")
                 }
                 .buttonStyle(Capsule_(filled: true)).keyboardShortcut(.space, modifiers: []).hoverEffect(.lift)
+                .disabled(a?.can(playing ? "pause" : "play") == false)
                 Button { m.transport("next") } label: { Image(systemName: "forward.fill") }
                     .buttonStyle(Capsule_()).keyboardShortcut(.rightArrow, modifiers: .command).hoverEffect(.lift)
+                    .disabled(a?.can("next") == false)
             }
             .disabled(m.state.active == nil)
             HStack(spacing: 10) {
                 Image(systemName: "speaker.fill").font(.caption).foregroundStyle(Theme.muted)
-                RelativeSlider(value: m.volume) { v, final in m.setVolume(v, final: final) }
+                RelativeSlider(value: m.volume, max: m.state.volumeLimit > 0 ? Double(m.state.volumeLimit) / 100 : 1) { v, final in m.setVolume(v, final: final) }
                 Image(systemName: "speaker.wave.3.fill").font(.caption).foregroundStyle(Theme.muted)
             }
+            HStack(spacing: 6) {
+                Text("Ceiling").font(.caption).foregroundStyle(Theme.muted)
+                ForEach([0, 50, 70, 85], id: \.self) { l in
+                    Button(l == 0 ? "off" : "\(l)%") { m.volumeLimit(l) }.buttonStyle(Chip(filled: m.state.volumeLimit == l)).hoverEffect(.lift)
+                }
+                Spacer()
+                Text("Sleep").font(.caption).foregroundStyle(Theme.muted)
+                ForEach([0, 15, 30, 60, 90], id: \.self) { mins in
+                    Button(mins == 0 ? "off" : "\(mins)") { m.sleep(mins) }.buttonStyle(Chip(filled: mins == 0 && m.state.sleepLabel == nil)).hoverEffect(.lift)
+                }
+            }
+            if let sl = m.state.sleepLabel { Text("Sleep timer: \(sl)").font(.caption).foregroundStyle(Theme.warn) }
         }
+    }
+    private var mixLine: String? {
+        var bits: [String] = []
+        if let v = m.state.viaPrimary, !v.isEmpty { bits.append("via primary \(v)") }
+        if let b = m.state.active?.mixBadge, !b.isEmpty { bits.append(b) }
+        return bits.isEmpty ? nil : bits.joined(separator: " · ")
     }
     private var title: String {
         if let a = m.state.active, !a.title.isEmpty { return a.title }
@@ -282,6 +309,23 @@ struct PadRoomMain: View {
             Text(f.spatialOn ? "Spatial · \(f.widthDeg)° wide, aimed \(f.aimDeg)° · pinch to widen, twist to aim"
                              : "All around · drag the puck, double-tap to centre")
                 .font(.caption).foregroundStyle(Theme.muted)
+            if f.spatialOn {
+                HStack {
+                    Text("Spread").font(.caption).foregroundStyle(Theme.muted)
+                    Slider(value: $spread, in: 50...240, step: 2, onEditingChanged: { editing in
+                        spreadDrag = editing; f.setWidth(halfDeg: spread / 2, final: !editing)
+                    })
+                    .tint(.white)
+                    .onChange(of: spread) { v in if spreadDrag { f.setWidth(halfDeg: v / 2, final: false) } }
+                    Text("\(Int(spread))°").font(.caption.monospacedDigit()).frame(width: 44, alignment: .trailing)
+                }
+                .onAppear { spread = Double(f.widthDeg) * 2 }
+                .onChange(of: f.widthDeg) { w in if !spreadDrag { spread = Double(w) * 2 } }
+            }
+            HStack(spacing: 8) {
+                Toggle("Height", isOn: Binding(get: { m.state.rep?.height ?? false }, set: { m.spatialFlag("height", $0) })).font(.caption).tint(Theme.live)
+                Toggle("Beyond stereo", isOn: Binding(get: { m.state.rep?.beyond ?? false }, set: { m.spatialFlag("beyond", $0) })).font(.caption).tint(Theme.live)
+            }
             HStack(spacing: 8) {
                 Button("Syng") { m.soundMode("syng") }.buttonStyle(Capsule_(filled: m.state.soundMode != "direct")).hoverEffect(.lift)
                 Button("Direct") { m.soundMode("direct") }.buttonStyle(Capsule_(filled: m.state.soundMode == "direct")).hoverEffect(.lift)

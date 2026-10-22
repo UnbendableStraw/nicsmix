@@ -9,6 +9,13 @@ enum Shared {
         get { defaults.string(forKey: "lastAgent") }
         set { defaults.set(newValue, forKey: "lastAgent") }
     }
+    /// The same speaker's other address (its Wi-Fi when agentIP is its wire).
+    static var agentFallbackIP: String? {
+        get { defaults.string(forKey: "lastAgentFallback") }
+        set { defaults.set(newValue, forKey: "lastAgentFallback") }
+    }
+    static var agent: Agent? { agentIP.map { Agent(ip: $0, fallback: agentFallbackIP) } }
+    static func remember(_ room: Room) { agentIP = room.agent?.ip; agentFallbackIP = room.agent?.fallback; roomName = room.name }
     static var roomName: String? {
         get { defaults.string(forKey: "lastRoom") }
         set { defaults.set(newValue, forKey: "lastRoom") }
@@ -42,7 +49,7 @@ struct RoomSnapshot {
     var listener: (x: Double, y: Double) = (0, 0)
     var circleRotation = 0.0
     var ledMode: String? = nil      // nil = manual / off
-    var ledModes: [String] = ["pulse", "party", "flow", "groove", "bloom", "shimmer", "spectrum", "vu", "beat"]
+    var ledModes: [String] = ["pulse", "party", "flow", "groove", "bloom", "shimmer", "spectrum", "vu", "beat", "room"]
     var playing: String? = nil
     var reachable = false
 
@@ -50,7 +57,7 @@ struct RoomSnapshot {
     static func fetch() async -> RoomSnapshot {
         var s = RoomSnapshot(); s.room = Shared.roomName ?? "Troubadour"
         guard let ip = Shared.agentIP else { return s }
-        let a = Agent(ip: ip)
+        let a = Agent(ip: ip, fallback: Shared.agentFallbackIP)
         async let st = try? a.get("/api/state", timeout: 4)
         async let rm = try? a.get("/api/room", timeout: 4)
         async let ld = try? a.get("/api/led", timeout: 4)

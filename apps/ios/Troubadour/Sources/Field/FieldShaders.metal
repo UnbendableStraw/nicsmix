@@ -1,18 +1,27 @@
-//  The sound field, natively.
+//  The sound field, natively — now built the way the Syng app builds it.
 //
-//  A Metal port of the agent's WebGL field (field/field.js), which is itself a reproduction of the
-//  Syng app's own renderer (ProtoTools particle system + Aurora SDF shapes; docs/SOUND-FIELD.md).
-//  Four stages, all on the GPU — the web version runs the particle simulation on the CPU at 30 Hz,
-//  which is what makes it lag; here the kernel runs on the GPU and the frame only interpolates:
+//  Everything below was read out of the decrypted Syng Space 2.1.0 app (ProtoTools / Aurora / AudioAnalysisTools
+//  Metal shaders + the Swift that drives them; docs/SOUND-FIELD.md "What the app really does"). The field is
+//  five GPU stages:
 //
-//    1. scene      — room disc, capped-torus aura in the source's palette, flurry blobs, pulse halo
-//    2. blit       — upscale the (deliberately low-res) scene into the full-size target
-//    3. particles  — compute kernel (sim, fixed 30 Hz steps) + additive points displaced by the
-//                    pulse texture, drawn over the scene
-//    4. overlay    — glass orbs (puck, notch, handles, lift dot) refracting the scene through the
-//                    app's lens table, then the speaker rings and the volume rim
+//    1. flurry     — the aura: ~52 soft additive colour blobs (AuraGenerator.FlurryGenerator) drawn into a small
+//                    square texture, then normalised + saturated (AuraColorAdjustment: colorMatrix + normalization)
+//    2. particles  — the Aerosol: 262,144 particles pulled onto a capped-torus surface (updateParticle, exact), drawn
+//                    as additive points displaced by the pulse texture (vertexShader/fragmentShader, exact) into a
+//                    512×512 half-float target that is NEVER cleared: each frame it is Gaussian-blurred (σ 5) and
+//                    faded (a black rect at blurFade alpha) before the new points land — the glow and the short
+//                    trails come from that feedback, not from big point sprites
+//    3. scene      — the room disc: the aura shows dimly everywhere, the Aerosol reveals it brightly (the particle
+//                    image is a luminance mask over the aura, which is why album colours ride the glitter)
+//    4. overlay    — glass orbs (puck with artwork or glyph, notch, handles, lift dot) refracting the scene through
+//                    the app's lens table, speaker rings, the volume rim
 //
-//  Field space: the puck is the origin, the room rim is at radius 0.5, screen y is down.
+//  Field space: the puck is the origin, the field rim is at radius 0.5, +y is UP (the app's normalised handle
+//  space: ((p - centre) / outerRadius) * 0.5 with y flipped). Angles are the app's screen angles (radians,
+//  y down, -π/2 = up).
+//
+//  The previous renderer's "puff" simulation (an onset impulse per spectrum band, float timers, home radius)
+//  is kept behind S.mode == 0 so the two can be compared; it is not what the app does.
 
 #include <metal_stdlib>
 using namespace metal;
@@ -27,32 +36,104 @@ constant float LENS[64] = {
 
 struct FieldUniforms {
     float4 res;      // xy: drawable size (px)   zw: room centre (px)
-    float4 geom;     // x: room radius  y: field radius  z: puck radius  (px)   w: time (s)
-    float4 puck;     // xy: puck centre (px)   zw: unused
-    float4 axis;     // xy: arc axis n   z: sin(spread*pi)   w: cos(spread*pi)
-    float4 torus;    // x: ra  y: rb  z: capR  w: blend
-    float4 caps;     // xy: cap centre 1   zw: cap centre 2   (field units)
+    float4 geom;     // x: room radius  y: outer (field) radius  z: puck radius  (px)   w: time (s)
+    float4 puck;     // xy: puck centre (px)   z: aerosol on (0..1, the app's expansion)   w: classic (1 = no particles)
+    float4 axis;     // x: angle (screen rad)  y: spreadAngle (rad, half-angle)  z: spreadPercentage  w: weight
+    float4 torus;    // x: ra  y: rb  z: capR  w: blend   (field units, from the kernel's own rules)
+    float4 caps;     // xy: start cap   zw: end cap   (field units, y up)
     float4 env;      // x: energy  y: bass  z: spatial 0..1  w: halo gain
-    float4 gains;    // x: glow  y: grain  z: flurry  w: scale factor (px per point)
-    float4 pts;      // x: point scale  y: point gain  z: sim lerp  w: reactive low edge
-    float4 pulse;    // x: head row  y: row scale  z: emitter radius  w: gain
-    float4 cDeep, cCyan, cLight, cWhite, cBlue, cTeal, cRoom, cRoomEdge;
+    float4 gains;    // x: aura (background) gain  y: grain  z: particle (reveal) gain  w: px per point
+    float4 pts;      // x: point size scale (drawable px per 512-target px)  y: brightness gain  z: legacy sim lerp  w: legacy react edge
+    float4 pulse;    // x: pulseTextureOffset (newest row / 32)  y: angleTransform.x  z: emitter radius  w: pulse gain
+    float4 auraMap;  // xy: aura square origin (px)  z: side (px)  w: 1 = pulse texture wraps in u (classic 360° map)
+    float4 cRoom, cRoomEdge, cWhite, cTint;   // room base colours; cTint = the colour the aerosol is tinted with when the aura is flat
+    float4 misc;     // x: aura reveal floor  y: aura dim (classic)  z: legacy pulse scale  w: legacy aura mode (1 = previous SDF aura look)
+    float4 aeroMap;  // field units -> the Aerosol target's clip space: clip = p * xy + zw   (normal: (2, 2, 0, 0))
+    float4 aeroUV;   // where the Aerosol image sits in this pass, in pixels: xy origin, zw size (normal: the square around the puck)
+    float4 fill;     // x: fill scale k (1 normally)  y: 1 = fill the screen (aeroMap.xy is then the puck in 0..1 of the screen)
 };
 
 struct Particle {
     float4 pos;   // xyz: position (field units)   w: life
-    float4 vel;   // xyz: velocity                 w: float timer
-    float4 org;   // xyz: spawn origin             w: home radius
-    float4 aux;   // x: seed  y: return timer  zw: previous xy (for interpolation)
+    float4 vel;   // xyz: velocity                 w: float timer (legacy)
+    float4 org;   // xyz: spawn origin             w: home radius (legacy)
+    float4 aux;   // x: seed  y: return timer (legacy)  zw: previous xy
 };
 
 struct SimUniforms {
-    float4 axis;    // xy: n   z: sinA   w: cosA
+    float4 axis;    // x: angle  y: spreadAngle  z: spreadPercentage  w: weight
     float4 torus;   // x: ra  y: rb  z: capR  w: blend
-    float4 caps;    // xy: c1   zw: c2
-    float4 cfg;     // x: dt  y: time  z: beat kick  w: reactive low edge
-    float4 cfg2;    // x: puffGain  y: puffVmax  z: puffFloat  w: puffReach
+    float4 caps;    // xy: start cap   zw: end cap
+    float4 cfg;     // x: dt (s)  y: time (s)  z: beat kick (legacy)  w: reactive low edge (legacy)
+    float4 cfg2;    // x: puffGain  y: puffVmax  z: puffFloat  w: puffReach (legacy)
+    float4 mode;    // x: 1 = the app's kernel, 0 = legacy puff physics   y: legacy step dt (s)  zw: unused
+    float4 pulse;   // x: pulseTextureOffset  y: angleTransform.x  z: emitterRadius  w: gain   (as FieldUniforms.pulse)
+    float4 extra;   // x: idle drift amplitude  y: puff mix  z: 1 = pulse u wraps (classic)  w: screen angle (rad)
+    float4 extra2;  // x: fill scale k  y: beat kick (this frame's, already × gain)  z: energy 0..1  w: tube spread 0..1
 };
+
+// pulseForce()'s sampling, shared by the vertex shader (the app) and the kernel (Troubadour's puff): the signed
+// pulse gradient at a particle, already scaled by sqrt(1 − d) — what the app multiplies into its displacement.
+static float pulseAmount(float2 p, float angle, float weight, float4 pulse, bool wrap, float k,
+                         texture2d<float> tex, sampler clampSmp, sampler wrapSmp) {
+    float cs = cos(angle), sn = sin(angle);
+    float2 q = float2(cs * p.x - sn * p.y, sn * p.x + cs * p.y);          // positionTransform: rotate by angle
+    float r2 = dot(q, q);
+    float theta = 0.0, r = 0.0;
+    if (r2 >= 0.000333) { theta = atan2(q.y, q.x); r = sqrt(r2); }
+    float e = pulse.z;                                                   // emitterRadius (0.6 * 0.5 = 0.3)
+    float scaleIn  = (2.0 * e - 1.0 + weight) > 0.001 ? 2.0 / (2.0 * e - 1.0 + weight) : 1999.9999;
+    float scaleOut = (1.0 - 2.0 * e) > 0.001 ? 2.0 / (1.0 - 2.0 * e) : 1999.9999;
+    float scale = (e < r) ? scaleOut : scaleIn;
+    float u = theta * pulse.y + 0.5;                                     // angleTransform
+    float d = scale * abs(r - e);
+    // k > 1 (fill the screen): the rows are read k times faster across the field, so the rings stay as far apart
+    // on screen as in the normal circle and repeat outward (the v address wraps), while the fade below still
+    // runs to the field's rim — the whole screen reacts instead of a magnified copy of the small field.
+    float v0 = pulse.x + d * k;
+    float s1, s2;
+    if (wrap) {
+        s1 = tex.sample(wrapSmp, float2(u, v0 + 1.0 / 32.0)).r;
+        s2 = tex.sample(wrapSmp, float2(u, v0 - 1.0 / 32.0)).r;
+    } else {
+        s1 = tex.sample(clampSmp, float2(u, v0 + 1.0 / 32.0)).r;
+        s2 = tex.sample(clampSmp, float2(u, v0 - 1.0 / 32.0)).r;
+    }
+    return sqrt(max(1.0 - d, 0.0)) * (s1 - s2) * pulse.w;
+}
+
+// Idle drift on the torus itself. On the full ring: along it by an amount that depends only on where a particle sits
+// around its tube (θ), and around the tube by an amount that depends only on where it sits along the ring (φ) ÷ its
+// distance from the axis — on a torus that pair has zero surface divergence, so it stirs the glitter without herding
+// it anywhere. On an arc (spatial) the along-ring part comes from a stream function that vanishes at the arc's ends,
+// so particles circulate (out along one side of the tube, back along the other) instead of piling into the caps.
+// The older in-plane flow, once the pull flattened it onto the tube, had sinks along the band's outer and inner
+// silhouettes and slowly piled particles up there — the screen's edge when filling it.
+static float3 torusFlow(float3 x, float ra, float t, float seed, float axisAngle, float spread) {
+    float rxy = length(x.xy);
+    float rho = max(rxy, 0.25 * ra);
+    float2 c = x.xy / rho;
+    float th = atan2(x.z, rxy - ra);
+    float ph = atan2(x.y, x.x);
+    float st = sin(th), ct = cos(th);
+    float3 ePh = float3(-c.y, c.x, 0.0), eTh = float3(-st * c.x, -st * c.y, ct);
+    float around = (sin(3.0 * ph + t * 0.19 + 6.2832 * seed) + 0.6 * cos(5.0 * ph - t * 0.13 + 1.3)) * ra / rho;
+    float g1 = th + t * 0.23 + 6.2832 * seed, g2 = 2.0 * th - t * 0.17 + 2.1;
+    float sp = clamp(spread, 0.05, 1.0);
+    if (sp > 0.98) {
+        float along = sin(g1) + 0.6 * sin(g2);
+        return along * ePh + around * eTh;
+    }
+    // the arc's own angle β (the capped torus' frame: centred on perp, half-width sp·π, β̂ = −φ̂)
+    float a = axisAngle + M_PI_F;
+    float2 dir = float2(sin(a), cos(a)), perp = float2(-dir.y, dir.x);
+    float eta = clamp(atan2(dot(x.xy, dir), dot(x.xy, perp)) / (sp * M_PI_F), -1.0, 1.0);
+    float G = sin(g1) + 0.6 * sin(g2), Gp = cos(g1) + 1.2 * cos(g2);
+    float r = length(float2(rxy - ra, x.z));
+    float along = cos(1.5707963 * eta) * Gp;
+    around += r * sin(1.5707963 * eta) * G / (2.0 * sp * rho);
+    return -along * ePh + around * eTh;
+}
 
 struct OverlayUniforms {
     float4 res;     // xy: drawable size (px)   zw: room centre (px)
@@ -60,30 +141,71 @@ struct OverlayUniforms {
     float4 puck;    // xy: puck centre (px)   z: glyph on   w: omni 0..1 (1 = handles hidden)
     float4 hA;      // xy: handle A (px)   z: grabbed   w: unused
     float4 hB;      // xy: handle B (px)   z: grabbed   w: unused
-    float4 nt;      // xy: notch (px)   z: direction (rad)   w: grabbed
+    float4 nt;      // xy: notch (px)   z: direction (rad, screen)   w: grabbed
     float4 ntSize;  // x: half width  y: half length (px)   z: lift dot grabbed  w: show volume
     float4 lift;    // xy: lift dot (px)   z: visible   w: unused
     float4 flags;   // x: ring count  y: listener x  z: listener y  w: has listener
+    float4 art;     // x: artwork in the puck (0/1)  y: artwork aspect  zw: unused
 };
 
-// ---------------------------------------------------------------- shared SDF
+struct FlurryBlob { float4 geo; float4 col; };   // geo: xy centre (0..1 square), z radius (fraction of side), w alpha; col: rgb + feather
 
-// The ProtoTools capped torus: the arc between the two handles, thickened by `weight`, with rounded
-// caps that grow as the arc widens. The exact function the web renderer and the app's kernel use.
-static float fieldSDF(float3 p, float2 n, float sinA, float cosA, float4 torus, float4 caps) {
-    float ra = torus.x, rb = torus.y, capR = torus.z, blend = torus.w;
-    float yr = p.x * n.x + p.y * n.y;
-    float xr = abs(p.x * (-n.y) + p.y * n.x);
-    float k  = (cosA * xr > sinA * yr) ? (xr * sinA + yr * cosA) : sqrt(xr * xr + yr * yr);
-    float k2 = sqrt(xr * xr + yr * yr);
-    float pp = xr * xr + yr * yr + p.z * p.z;
-    float d1 = sqrt(max(0.0, pp + ra * ra - 2.0 * ra * k))  - rb;
-    float d2 = sqrt(max(0.0, pp + ra * ra - 2.0 * ra * k2)) - rb;
+// ---------------------------------------------------------------- the app's capped torus (updateParticle.metal)
+
+// p.x/p.y are the app's normalised handle space (y up). dir = (sin(angle + π), cos(angle + π)).
+// sc = (sin, cos) of the arc half-angle (spreadPercentage * π). ra/rb from weight. Caps from the CPU.
+static float cappedTorus(float3 p, float2 dir, float2 sc, float ra, float rb, float4 caps, float spreadPct) {
+    float2 perp = float2(-dir.y, dir.x);
+    float px = abs(dot(p.xy, dir));
+    float py = dot(p.xy, perp);
+    float2 q = float2(px, py);
+    float k  = (sc.y * px > sc.x * py) ? dot(q, sc) : length(q);
+    // the app's "full ring" term uses sin/cos of half(3.14) = 3.140625: k2 == |q| for every p that matters
+    float k2 = length(q);
+    float pp = dot(q, q) + p.z * p.z;
+    float d1 = sqrt(max(pp + ra * ra - 2.0 * ra * k, 0.0)) - rb;
+    float d2 = sqrt(max(pp + ra * ra - 2.0 * ra * k2, 0.0)) - rb;
+    float t    = clamp((spreadPct - 0.5) * 5.0, 0.0, 1.0);
+    float capR = rb * t * t * (3.0 - 2.0 * t);
     float dS = length(float3(p.x - caps.x, p.y - caps.y, p.z)) - capR;
     float dE = length(float3(p.x - caps.z, p.y - caps.w, p.z)) - capR;
+    float blend = spreadPct > 0.5 ? 0.1 : 1e-5;
     float h  = clamp(0.5 * (dE - dS) / blend + 0.5, 0.0, 1.0);
     float sm = mix(dE, dS, h) - blend * h * (1.0 - h);
     return max(min(sm, d1), d2);
+}
+
+// (normal, distance) by central differences, eps 0.001 — sampleNormalAndDistance()
+static float4 sampleNormalAndDistance(float3 p, float4 axis, float4 torus, float4 caps) {
+    float spread = clamp(axis.z, 0.05, 1.0);
+    float2 sc = float2(sin(spread * 3.140625), cos(spread * 3.140625));
+    float a = axis.x + M_PI_F;
+    float2 dir = float2(sin(a), cos(a));
+    float ra = torus.x, rb = torus.y;
+    const float e = 0.001;
+    float d  = cappedTorus(p, dir, sc, ra, rb, caps, spread);
+    float dx = cappedTorus(p + float3(e, 0, 0), dir, sc, ra, rb, caps, spread) - cappedTorus(p - float3(e, 0, 0), dir, sc, ra, rb, caps, spread);
+    float dy = cappedTorus(p + float3(0, e, 0), dir, sc, ra, rb, caps, spread) - cappedTorus(p - float3(0, e, 0), dir, sc, ra, rb, caps, spread);
+    float dz = cappedTorus(p + float3(0, 0, e), dir, sc, ra, rb, caps, spread) - cappedTorus(p - float3(0, 0, e), dir, sc, ra, rb, caps, spread);
+    float3 n = float3(dx, dy, dz);
+    float l = length(n);
+    n = l > e ? n / l : float3(0.0);
+    return float4(n, d);
+}
+
+// applyRandomAngle(f, -90, 90): rand() of the constant (-90, 90) pair is a constant, so the "random" rotation is a
+// fixed sub-degree twist; what matters is the soft magnitude cap it ends with: |f| >= 1 is scaled by
+// smoothstep(5/|f| - 4) and vanishes past 1.25.
+static float3 applyRandomAngle(float3 f) {
+    const float a = 0.7373 * 0.017453292;   // fract(sin(dot((-90,90),(12.9898,78.233))) * 43758.5453) in degrees
+    float c = cos(a), s = sin(a);
+    float3 r = float3(c * f.x - s * f.y, s * f.x + c * f.y, f.z);          // z
+    r = float3(c * r.x + s * r.z, r.y, -s * r.x + c * r.z);                // y
+    r = float3(r.x, c * r.y - s * r.z, s * r.y + c * r.z);                 // x
+    float l = length(r);
+    if (l < 1.0) return r;
+    float t = clamp(5.0 / l - 4.0, 0.0, 1.0);
+    return (r / l) * (t * t * (3.0 - 2.0 * t));
 }
 
 struct FSOut {
@@ -99,123 +221,118 @@ vertex FSOut fullscreenVertex(uint vid [[vertex_id]]) {
     return o;
 }
 
-fragment float4 blitFragment(FSOut in [[stage_in]],
-                             texture2d<float> src [[texture(0)]],
-                             sampler smp [[sampler(0)]]) {
-    return float4(src.sample(smp, in.uv).rgb, 1.0);
+// ---------------------------------------------------------------- 1. the aura (FlurryGenerator + AuraColorAdjustment)
+
+// Each flurry particle is an Aurora Circle: additive, radius = side * r * (envelope + 0.16), opacity (k * envelope)^2,
+// feather 0.89..1 (almost a pure radial fade). The colour adjustment that follows: divide by |max| when it exceeds 1,
+// mix with the normalised direction (normalization 0.3), then the saturation matrix (saturation 2).
+fragment float4 flurryFragment(FSOut in [[stage_in]],
+                               constant FlurryBlob *blobs [[buffer(0)]],
+                               constant float4 &cfg       [[buffer(1)]])   // x: count  y: normalization  z: saturation  w: max magnitude
+{
+    float2 uv = in.uv;
+    float3 c = float3(0.0);
+    int n = int(cfg.x);
+    for (int i = 0; i < n && i < 64; i++) {
+        FlurryBlob b = blobs[i];
+        float d = length(uv - b.geo.xy);
+        float r = max(b.geo.z, 1e-4);
+        float feather = clamp(b.col.w, 0.0, 1.0);
+        float cov = 1.0 - smoothstep(r * (1.0 - feather), r, d);
+        c += b.col.rgb * (b.geo.w * cov);
+    }
+    float mag = cfg.w;
+    if (mag > 1.0) c /= mag;
+    float len = length(c);
+    float3 nrm = len > 1e-5 ? c / len : c;
+    c = mix(c, nrm, cfg.y);
+    float s = cfg.z;
+    float3x3 sat = float3x3(float3(0.213 + 0.787 * s, 0.213 - 0.213 * s, 0.213 - 0.213 * s),
+                            float3(0.715 - 0.715 * s, 0.715 + 0.285 * s, 0.715 - 0.715 * s),
+                            float3(0.072 - 0.072 * s, 0.072 - 0.072 * s, 0.072 + 0.928 * s));
+    c = saturate(sat * c);
+    return float4(c, 1.0);
 }
 
-// ---------------------------------------------------------------- scene
-
-fragment float4 sceneFragment(FSOut in [[stage_in]],
-                              constant FieldUniforms &U [[buffer(0)]],
-                              constant float4 *blobs    [[buffer(1)]],   // 24 flurry blobs: xy pos, z radius, w weight
-                              constant float4 *halo     [[buffer(2)]],   // 6 pulse blobs, then 6 phase sets
-                              texture2d<float> noise    [[texture(0)]],
-                              sampler noiseSmp          [[sampler(0)]]) {
-    float2 px = in.uv * U.res.xy;
-    float2 C = U.res.zw, P = U.puck.xy;
-    float R = max(U.geom.x, 1.0), Rf = max(U.geom.y, 1.0), puckR = max(U.geom.z, 1.0);
-
-    float dC = length(px - C);
-    float rr = dC / R;
-    float inRoom = 1.0 - smoothstep(R - 1.0, R + 1.0, dC);
-
-    float2 f = (px - P) / (2.0 * Rf);          // field space, rim at 0.5
-    float d = fieldSDF(float3(f, 0.0), U.axis.xy, U.axis.z, U.axis.w, U.torus, U.caps);
-    float fr = length(f);
-    float px2f = 1.0 / (2.0 * Rf);             // one pixel in field units
-
-    // room disc: dark navy-teal, darker toward the rim and the bottom (glass sphere shading)
-    float3 col = mix(U.cRoom.rgb, U.cRoomEdge.rgb, smoothstep(0.35, 1.0, rr));
-    col *= 1.0 - 0.28 * smoothstep(-0.2, 1.0, (px.y - C.y) / R);
-
-    // aura: the SDF interior glows (palette ramp), soft spill outside, white core at the puck
-    float inside = 1.0 - smoothstep(-6.0 * px2f, 2.0 * px2f, d);
-    float spill  = exp(-max(d, 0.0) * 16.0);
-    float core   = exp(-fr * 7.0);
-    float g = inside * (0.11 + 0.12 * exp(-fr * 3.0)) + spill * 0.12 * (1.0 - inside);
-    g += exp(-abs(d) * 30.0) * 0.16 * inside;
-    g *= 0.80 + 0.45 * U.env.x;
-    g += core * 0.22 * (1.0 + 0.5 * U.env.y);
-
-    float fl = 0.0;
-    float3 flc = float3(0.0);
-    for (int i = 0; i < 24; i++) {
-        float4 bb = blobs[i];
-        float q = length(f - bb.xy) / max(bb.z, 0.001);
-        float w = bb.w * (1.0 - smoothstep(0.1, 1.0, q));
-        fl += w;
-        flc += w * mix(U.cBlue.rgb, U.cTeal.rgb, float(i % 2));
-    }
-    g += fl * 0.10 * U.gains.z * inside;
-    g *= U.gains.x;
-
-    float3 aura = mix(mix(U.cDeep.rgb, U.cCyan.rgb, clamp(g * 2.0, 0.0, 1.0)),
-                      U.cWhite.rgb, clamp((g - 0.5) * 2.0, 0.0, 1.0));
-
-    // classic (sound all around): a smooth saturated disc, brighter toward the puck
-    float gc = inside * (0.55 + 0.30 * exp(-fr * 2.2)) + spill * 0.25 * (1.0 - inside);
-    gc *= 0.85 + 0.3 * U.env.x;
-    float3 classic = mix(U.cBlue.rgb, mix(U.cCyan.rgb, U.cWhite.rgb, 0.35), clamp((gc - 0.55) * 2.2, 0.0, 1.0));
-    classic = mix(classic, flc / max(fl, 0.001), clamp(fl * 0.35 * U.gains.z, 0.0, 0.45));
-    classic *= 0.62 + 0.38 * exp(-fr * 2.6);        // depth: bright at the puck, deeper toward the rim, so the particles have something to show against
-    classic += U.cWhite.rgb * core * 0.6 * (1.0 + 0.4 * U.env.y);
-
-    float3 auraS = mix(col, aura, smoothstep(0.0, 0.55, g));
-    float3 auraC = mix(col, classic, smoothstep(0.0, 0.5, gc));
-    auraC = mix(auraC, auraC + flc * 0.12 * U.gains.z, inside);
-    col = mix(auraC, auraS, U.env.z);
-
-    // Aurora PulseField: soft wobbly blobs around the puck, one per band, layered translucently
-    float acc = 0.0;
-    for (int k = 0; k < 6; k++) {
-        float4 pe = halo[k];
-        float4 ph = halo[6 + k];
-        float2 c = P + pe.xy * puckR;
-        float2 dv = px - c;
-        float dd = length(dv) / puckR;
-        float th = atan2(dv.y, dv.x);
-        float rad = pe.z * (1.0 + ph.z * cos(2.0 * th + ph.x) + ph.w * cos(3.0 * th + ph.y));
-        float cov = 1.0 - smoothstep(rad - 0.22, rad + 0.22, dd);
-        acc = acc + cov * pe.w * (1.0 - acc);
-    }
-    acc *= U.env.w * mix(0.75, 1.0, U.env.z);
-    col = mix(col, mix(U.cWhite.rgb, float3(1.0), 0.5), clamp(acc, 0.0, 0.97));
-
-    // glow bleeding past the room rim (the lobes light up the edge)
-    float outer = exp(-max(dC - R, 0.0) / (0.05 * R)) * (1.0 - inRoom) * smoothstep(0.0, 0.4, g) * 0.35;
-    col += U.cCyan.rgb * outer;
-
-    // grain (Aurora NoiseRGB)
-    float t = U.geom.w;
-    float n = noise.sample(noiseSmp, px / 96.0 + float2(t * 0.013, -t * 0.009)).r;
-    col *= 1.0 + (n - 0.5) * 0.22 * U.gains.y;
-
-    // glass room rim: faint bright ring, nothing outside the disc
-    col += float3(0.10, 0.22, 0.28) * smoothstep(0.90, 0.985, rr) * (1.0 - smoothstep(0.985, 1.0, rr));
-    col = mix(col, U.cCyan.rgb * outer, 1.0 - inRoom);
-    return float4(col, 1.0);
-}
-
-// ---------------------------------------------------------------- particle simulation
+// ---------------------------------------------------------------- 2. the Aerosol
 
 kernel void simulateParticles(device Particle *parts   [[buffer(0)]],
                               constant SimUniforms &S  [[buffer(1)]],
-                              constant float *flux     [[buffer(2)]],   // 24 bands
+                              constant float *flux     [[buffer(2)]],   // 24 bands (legacy physics only)
                               constant uint &count     [[buffer(3)]],
+                              texture2d<float> pulse   [[texture(0)]],
+                              sampler pulseSmp         [[sampler(0)]],
+                              sampler pulseWrap        [[sampler(1)]],
                               uint id [[thread_position_in_grid]]) {
     if (id >= count) return;
     Particle p = parts[id];
-    float dt = S.cfg.x;
     float3 x = p.pos.xyz, v = p.vel.xyz;
-    float life = p.pos.w - dt * 0.05 * 60.0;   // the app decrements per frame
-    float flt = p.vel.w, home = p.org.w, seed = p.aux.x, rt = p.aux.y;
-    float2 n = S.axis.xy;
-    p.aux.zw = x.xy;                           // where it was, for the render interpolation
+    p.aux.zw = x.xy;
 
-    // music -> puff: an outward impulse in this particle's own spectrum band (bass at the notch,
-    // treble behind) plus a beat kick; puffed particles float free, then ease back to their radius.
+    if (S.mode.x > 0.5) {
+        // ---- the app's updateParticle, line for line. deltaTime is in seconds (CACurrentMediaTime deltas), so
+        // life -= dt * 0.05 means a particle re-seeds every few minutes, not every few seconds. ----
+        // the app keeps `life` as a half: 10…100 minus dt·0.05 rounds straight back, so particles never re-seed
+        float life = float(half(float(half(p.pos.w)) - S.cfg.x * 0.05));
+        // ---- Troubadour: two kicks the app does not have, both scaled by the real dt (the app's kernel is per frame) ----
+        float fr = S.cfg.x * 60.0;                        // frames' worth of this step
+        float k = max(S.extra2.x, 1.0);                   // fill scale: on-screen sizes stay those of the normal circle
+        if (S.extra.x > 0.0) {
+            // idle drift: ~1/4000 of the field radius per frame at 1 (the speed the old velocity kick settled at);
+            // the music quickens it (×1…3 with the energy). It moves the particle directly rather than through `v`:
+            // velocity kept in a straight line while the ring curves away is a centrifugal push, which herded the
+            // drifting particles round their tube to its outer rim.
+            x += torusFlow(x, S.torus.x, S.cfg.y, p.aux.x, S.axis.x, S.axis.z) * (2.5e-4 * S.extra.x * fr * (1.0 + 2.0 * S.extra2.z) / k);
+        }
+        // puff: the torus pull is stiff enough to cancel any velocity within two frames, so the swell lives in its
+        // own per-particle offset (vel.w, unused by the app's kernel): the pulse gradient pumps it, it eases back at
+        // ×0.92 per frame, and the vertex shader adds it radially — the previous physics' feel on the app's rings
+        float puff = p.vel.w;
+        if (S.extra.y > 0.0 || S.extra2.y > 0.0) {
+            float amt = pulseAmount(x.xy, S.extra.w, S.axis.w, S.pulse, S.extra.z > 0.5, k, pulse, pulseSmp, pulseWrap);
+            puff += amt * 0.09 * S.extra.y * fr / k;
+            // the beat kick: every particle, weighted 0.35…1 by its own seed, a quarter of them inward
+            float w = 0.35 + 0.65 * fract(p.aux.x * 7.31 + 0.17);
+            float dirSign = fract(p.aux.x * 3.71) < 0.25 ? -0.6 : 1.0;
+            puff += S.extra2.y * w * dirSign * fr / k;
+            puff *= pow(0.92, fr);
+            puff = clamp(puff, -0.10 / k, 0.10 / k);
+        } else {
+            puff = 0.0;
+        }
+        // where this particle rests in its tube: most near the skin as in the app, a tail deeper in (1 − 0.7·u^2.5 of
+        // the tube's radius). A hollow shell seen edge-on piles up along its silhouettes (the band's rim and the ring
+        // round the puck); this spread keeps the band's density even across its width (±10 % in a model of it).
+        // Outside the tube the pull is the app's; inside, the settle to that depth is the app's inner gain.
+        float u = fract(sin(p.aux.x * 91.7 + 3.1) * 43758.5453);
+        float depth = S.extra2.w * 0.7 * pow(u, 2.5) * S.torus.y;
+        float3 nx;
+        if (life > 0.0) {
+            float3 pr = x + v;
+            float4 nd = sampleNormalAndDistance(pr, S.axis, S.torus, S.caps);
+            float3 f = (nd.w > 0.0 ? 1.2 * nd.w : 0.5 * (nd.w + depth)) * (-nd.xyz);
+            f = applyRandomAngle(f);
+            v = f + v;
+            nx = x + f + v;
+        } else {
+            nx = p.org.xyz * sin(life + S.cfg.y * 0.01);
+            life = 100.0;
+        }
+        float len = length(nx);
+        if (len > 1.0) nx /= len;
+        p.pos = float4(nx, life);
+        p.vel = float4(v * 0.99, puff);
+        parts[id] = p;
+        return;
+    }
+
+    // ---- legacy: the previous renderer's puff physics (kept for comparison) ----
+    float dt = S.mode.y;
+    float life = p.pos.w - dt * 0.05 * 60.0;
+    float flt = p.vel.w, home = p.org.w, seed = p.aux.x, rt = p.aux.y;
+    float a = S.axis.x + M_PI_F;
+    float2 dir = float2(sin(a), cos(a));
+    float2 n = float2(-dir.y, dir.x);
     float sdr = fract(seed * 7.13 + 0.37);
     float tt = clamp((sdr - S.cfg.w) / 0.15, 0.0, 1.0);
     float react = 0.12 + 0.88 * tt * tt * (3.0 - 2.0 * tt);
@@ -231,7 +348,7 @@ kernel void simulateParticles(device Particle *parts   [[buffer(0)]],
         float home0 = home > 0.02 ? home : dist;
         float att = clamp(1.0 - (dist - home0) / max(0.05, S.cfg2.w), 0.0, 1.0);
         float imp = react * (S.cfg2.x * fl + S.cfg.z) * att;
-        float vr = dot(v.xy, x.xy) / dist;     // a puff tops up to a ceiling, it never stacks
+        float vr = dot(v.xy, x.xy) / dist;
         if (imp > 0.0002 && vr < S.cfg2.y && dist < 0.6) {
             float add = min(imp, S.cfg2.y - vr);
             v.xy += x.xy / dist * add;
@@ -242,32 +359,21 @@ kernel void simulateParticles(device Particle *parts   [[buffer(0)]],
             rt = S.cfg2.z * 1.5;
         }
     }
-
     float3 nx;
     if (life > 0.0) {
-        const float eps = 0.001;
         float3 pr = x + v;
-        float d0 = fieldSDF(pr, n, S.axis.z, S.axis.w, S.torus, S.caps);
-        float3 grad = float3(fieldSDF(pr + float3(eps, 0, 0), n, S.axis.z, S.axis.w, S.torus, S.caps) - d0,
-                             fieldSDF(pr + float3(0, eps, 0), n, S.axis.z, S.axis.w, S.torus, S.caps) - d0,
-                             fieldSDF(pr + float3(0, 0, eps), n, S.axis.z, S.axis.w, S.torus, S.caps) - d0);
-        float gl = length(grad);
-        grad = gl > 1e-9 ? grad / gl : float3(0.0);
-        // a floating particle barely feels the field, then it eases back in over the last 0.5 s
+        float4 nd = sampleNormalAndDistance(pr, S.axis, S.torus, S.caps);
         float ks = flt > 0.5 ? 0.08 : (flt > 0.0 ? 0.08 + 0.92 * (1.0 - flt / 0.5) : 1.0);
-        float3 f = -((d0 > 0.0 ? 1.2 : 0.5) * d0 * ks) * grad;
+        float3 f = -((nd.w > 0.0 ? 1.2 : 0.5) * nd.w * ks) * nd.xyz;
         v += f;
         nx = x + f + v;
     } else {
-        float s = sin(life + S.cfg.y * 0.01);
-        nx = p.org.xyz * s;
+        nx = p.org.xyz * sin(life + S.cfg.y * 0.01);
         life = 100.0;
     }
-
     float len = length(nx);
     if (len > 1.0) nx /= len;
-
-    if (rt > 0.0 && home > 0.02) {             // back toward the radius it had before the puff
+    if (rt > 0.0 && home > 0.02) {
         float d2 = length(nx.xy);
         if (d2 > 0.02) {
             float g = (home - d2) * (flt > 0.0 ? 0.012 : 0.04);
@@ -276,13 +382,21 @@ kernel void simulateParticles(device Particle *parts   [[buffer(0)]],
         if (flt <= 0.0) rt -= dt;
     }
     float damp = flt > 0.0 ? 0.94 : 0.99;
-    if (flt > 0.0 && dot(nx.xy, nx.xy) > 0.42) damp = 0.85;   // past the rim the puff dies quickly
-
+    if (flt > 0.0 && dot(nx.xy, nx.xy) > 0.42) damp = 0.85;
     p.pos = float4(nx, life);
     p.vel = float4(v * damp, flt > 0.0 ? flt - dt : 0.0);
     p.org.w = home;
     p.aux.y = rt;
     parts[id] = p;
+}
+
+// Fong's elliptical-grid mapping, unit disc -> square: the disc's rim lands exactly on the square's edge and the
+// interior stays smooth (no corners pinched to a point), so a circular field can fill a rectangle edge to edge.
+static float2 discToSquare(float2 q) {
+    float u = q.x, v = q.y, u2 = u * u, v2 = v * v, tw = 2.8284271;
+    float x = 0.5 * sqrt(max(2.0 + u2 - v2 + tw * u, 0.0)) - 0.5 * sqrt(max(2.0 + u2 - v2 - tw * u, 0.0));
+    float y = 0.5 * sqrt(max(2.0 - u2 + v2 + tw * v, 0.0)) - 0.5 * sqrt(max(2.0 - u2 + v2 - tw * v, 0.0));
+    return clamp(float2(x, y), -1.0, 1.0);
 }
 
 struct PointOut {
@@ -291,45 +405,143 @@ struct PointOut {
     float  bright;
 };
 
+// vertexShader + pulseForce(), exact. The pulse texture is SyngSpace.AudioDataHistory: 512 columns (the 360° channel
+// map, u = (deg + 180)/360, one Gaussian per layout emitter) × 32 rows (one per 1/30 s tick; (nextRow+1)/32 is the
+// newest, older rows follow it, the v address wraps). u = θ·angleTransform.x + 0.5 where θ is the particle's angle in
+// the field rotated by `angle`; v = pulseTextureOffset + distanceScale·|r − emitter|; the two taps are ±1 row.
 vertex PointOut particleVertex(uint vid [[vertex_id]],
                                device const Particle *parts [[buffer(0)]],
                                constant FieldUniforms &U    [[buffer(1)]],
                                texture2d<float> pulse       [[texture(0)]],
-                               sampler pulseSmp             [[sampler(0)]]) {
+                               sampler pulseSmp             [[sampler(0)]],
+                               sampler pulseWrap            [[sampler(1)]]) {
     Particle pt = parts[vid];
-    float2 n = U.axis.xy;
-    float2 q = mix(pt.aux.zw, pt.pos.xy, U.pts.z);
-    float dist = length(q);
-    float ang = dist > 0.001 ? atan2(dot(q, float2(-n.y, n.x)), dot(q, n)) : 0.0;
-    float u = 0.5 + 0.5 * ang / M_PI_F;                 // mirrored: bass at the notch, treble behind
-    float v = U.pulse.y * abs(dist - U.pulse.z);
-    float row = U.pulse.x + v;                          // newest row at head, older further along (repeat)
-    float s1 = pulse.sample(pulseSmp, float2(u, row + 1.0 / 32.0)).r;
-    float s2 = pulse.sample(pulseSmp, float2(u, row - 1.0 / 32.0)).r;
-    float sd = fract(pt.aux.x * 7.13 + 0.37);
-    float react = mix(0.12, 1.0, smoothstep(U.pts.w, U.pts.w + 0.15, sd));   // two populations
-    float amt = sqrt(max(1.0 - v, 0.0)) * (s1 - s2) * U.pulse.w * react;
-    float2 disp = (dist > 0.001 ? q / dist : float2(0.0)) * 0.05 * amt;
-    float2 sp = U.puck.xy + (q + disp) * 2.0 * U.geom.y;
-    float2 cs = sp / U.res.xy * 2.0 - 1.0;
+    float2 p = (U.pts.z > 0.0) ? mix(pt.aux.zw, pt.pos.xy, U.pts.z) : pt.pos.xy;   // interpolation only for the legacy 30 Hz sim
+    if (U.misc.w < 0.5) {                                                  // app physics: Troubadour's puff offset (field units)
+        float r0 = length(p);
+        if (r0 > 0.02) p += p / r0 * pt.vel.w;
+    }
+
+    // pulseForce(): the angle map is (120/spread°)/−2π (the app) or 1/−2π in classic (360° map, u wraps)
+    float k = max(U.fill.x, 1.0);
+    float amt = pulseAmount(p, U.axis.x, U.axis.w, U.pulse, U.auraMap.w > 0.5, k, pulse, pulseSmp, pulseWrap);
+    float r = length(p);
+    float2 disp = (r > 0.0 ? p / r : float2(0.0)) * 0.05 * amt;           // normalize(pos.xy) * 0.05 * amt (clip units of the normal square)
+    // normal: clip = 2p + disp (field 0.5 -> 1). Filling the screen the field maps onto a screen-shaped target and the
+    // displacement keeps its normal on-screen size (÷ k).
+    float2 cp;
+    if (U.fill.y > 0.5) {
+        // Fill the screen: the field's circle is mapped onto the screen's rectangle (its rim = the screen's edges),
+        // so nothing ever drifts off one side and back. The puck is the field's centre: each quadrant of the disc
+        // stretches to the screen edge on its side, wherever the puck is.
+        float2 q = (p + disp * (0.5 / k)) * 2.0;                          // unit disc
+        float rq = length(q);
+        // past the rim (a beat's puff, a ripple) a particle folds back in, like a bounce, instead of being squashed
+        // into a thin bright line against the screen's edge
+        if (rq > 1.0) q *= max(2.0 - rq, 0.5) / rq;
+        float2 sq = discToSquare(q);                                         // -1…1, y up
+        float2 pc = U.aeroMap.xy;                                            // the puck, 0…1 of the screen (y down)
+        float sx = pc.x + sq.x * (sq.x < 0.0 ? pc.x : 1.0 - pc.x);
+        float sy = pc.y - sq.y * (sq.y > 0.0 ? pc.y : 1.0 - pc.y);
+        cp = float2(sx * 2.0 - 1.0, 1.0 - sy * 2.0);
+    } else {
+        cp = (p + disp * (0.5 / k)) * U.aeroMap.xy + U.aeroMap.zw;
+    }
 
     PointOut o;
-    o.position = float4(cs.x, -cs.y, 0.0, 1.0);
+    o.position = float4(cp.x, cp.y, 0.0, 1.0);
     float a = abs(amt) * 2.0;
-    o.pointSize = (0.9 + min(a * 1.2, 2.0)) * U.gains.w * U.pts.x * (0.7 + 0.6 * pt.aux.x);
-    o.bright = 0.75 + a * 0.9;
+    o.pointSize = (1.0 + min(a * 2.0, 3.0)) * U.pts.x;                    // 1 + min(4|amt|, 3) px of the 512 target
+    o.bright = (0.75 + a) * U.pts.y;                                      // 0.75 + 2|amt|
     return o;
 }
 
-fragment float4 particleFragment(PointOut in [[stage_in]],
-                                 float2 pc [[point_coord]],
-                                 constant FieldUniforms &U [[buffer(0)]]) {
+// fragmentShader: (1 - |pc·2-1|) * color, alpha 1; blended src.rgb*src.a + dst (BlendMode case 2)
+fragment float4 particleFragment(PointOut in [[stage_in]], float2 pc [[point_coord]]) {
     float2 q = pc * 2.0 - 1.0;
     float a = max(0.0, 1.0 - length(q));
-    return float4(float3(0.66, 0.92, 1.0) * in.bright * a * 0.5 * U.pts.y, 1.0);
+    return float4(float3(a * in.bright), 1.0);
 }
 
-// ---------------------------------------------------------------- overlay: orbs, rings, volume
+// the per-frame fade of the never-cleared Aerosol target: a black rect at blurFade alpha, normal blending
+fragment float4 fadeFragment(FSOut in [[stage_in]], constant float4 &fade [[buffer(0)]]) {
+    return float4(0.0, 0.0, 0.0, fade.x);
+}
+
+// ---------------------------------------------------------------- 3. the scene
+
+fragment float4 sceneFragment(FSOut in [[stage_in]],
+                              constant FieldUniforms &U [[buffer(0)]],
+                              constant float4 *halo     [[buffer(1)]],   // 6 pulse blobs, then 6 phase sets
+                              texture2d<float> aura     [[texture(0)]],
+                              texture2d<float> aerosol  [[texture(1)]],
+                              texture2d<float> noise    [[texture(2)]],
+                              sampler clampSmp          [[sampler(0)]],
+                              sampler repeatSmp         [[sampler(1)]]) {
+    float2 px = in.uv * U.res.xy;
+    float2 C = U.res.zw, P = U.puck.xy;
+    float R = max(U.geom.x, 1.0), puckR = max(U.geom.z, 1.0);
+
+    float dC = length(px - C);
+    float rr = dC / R;
+    float inRoom = 1.0 - smoothstep(R - 1.0, R + 1.0, dC);
+
+    // the aura square covers the room's bounding square (flurry positions live in the unit square)
+    float2 auv = (px - U.auraMap.xy) / max(U.auraMap.z, 1.0);
+    float3 auraC = aura.sample(clampSmp, clamp(auv, 0.0, 1.0)).rgb;
+
+    // the Aerosol image: normally a square of side 2·outerRadius centred on the puck; filling the screen, the screen
+    float2 puv = (px - U.aeroUV.xy) / max(U.aeroUV.zw, float2(1.0));
+    float inSq = (puv.x >= 0.0 && puv.x <= 1.0 && puv.y >= 0.0 && puv.y <= 1.0) ? 1.0 : 0.0;
+    float aero = aerosol.sample(clampSmp, clamp(puv, 0.0, 1.0)).r * inSq * U.puck.z;
+
+    // The app's composition, measured from its own frames (docs/SOUND-FIELD.md, "composition"): the disc is the
+    // blurred aura at full strength in classic, dimmed to ~0.4 in spatial, and the Aerosol image adds aura × glitter on
+    // top (an HDR term — dense/reacting particles push past the aura's own brightness). Nothing else: no floor
+    // gradient, no halo, no rim. A faint floor keeps a black aura from vanishing entirely.
+    float dim = mix(U.misc.x, U.misc.y, U.puck.w);         // spatial 0.42 … classic 1.0
+    float3 col = auraC * (dim * U.gains.x) + U.cRoom.rgb * 0.12;
+    float3 tint = max(auraC, U.cTint.rgb * 0.2);
+    col += (tint + 0.12 * U.cWhite.rgb) * aero * U.gains.z;
+
+    // (legacy) Aurora PulseField blobs around the puck — not in the app; cfg.halo = 0 keeps them off
+    float acc = 0.0;
+    if (U.env.w > 0.001 && length(px - P) < puckR * 4.0) {
+        for (int k = 0; k < 6; k++) {
+            float4 pe = halo[k];
+            float4 ph = halo[6 + k];
+            float2 c = P + pe.xy * puckR;
+            float2 dv = px - c;
+            float dd = length(dv) / puckR;
+            float th = atan2(dv.y, dv.x);
+            float rad = pe.z * (1.0 + ph.z * cos(2.0 * th + ph.x) + ph.w * cos(3.0 * th + ph.y));
+            float cov = 1.0 - smoothstep(rad - 0.22, rad + 0.22, dd);
+            acc = acc + cov * pe.w * (1.0 - acc);
+        }
+        acc *= U.env.w * mix(0.75, 1.0, U.env.z);
+        col = mix(col, mix(U.cWhite.rgb, float3(1.0), 0.5), clamp(acc, 0.0, 0.97));
+    }
+
+    // the Aerosol's blur bleeds a little past the rim where the field reaches it (visible in the app's clips)
+    float outer = exp(-max(dC - R, 0.0) / (0.05 * R)) * (1.0 - inRoom) * aero * 0.35;
+    col += tint * outer;
+
+    // grain (Aurora NoiseRGB)
+    float t = U.geom.w;
+    float n = noise.sample(repeatSmp, px / 96.0 + float2(t * 0.013, -t * 0.009)).r;
+    col *= 1.0 + (n - 0.5) * 0.22 * U.gains.y;
+
+    col = mix(col, tint * outer, 1.0 - inRoom);
+    return float4(col, 1.0);
+}
+
+fragment float4 blitFragment(FSOut in [[stage_in]],
+                             texture2d<float> src [[texture(0)]],
+                             sampler smp [[sampler(0)]]) {
+    return float4(src.sample(smp, in.uv).rgb, 1.0);
+}
+
+// ---------------------------------------------------------------- 4. overlay: orbs, rings, volume
 
 static float lensAt(float r) {
     float x = clamp(r, 0.0, 1.0) * 63.0;
@@ -338,13 +550,13 @@ static float lensAt(float r) {
     return mix(LENS[i], LENS[j], x - float(i));
 }
 
-// One glass orb (Aurora ShapeLayer "Orb"): refracts the scene through the lens table, with the
-// gloss map's darken / contrast / rim approximated analytically so no app artwork is needed.
 static float4 glassOrb(float2 px, float2 centre, float radius, float halfLen, float rot,
-                       float darken, float tint, float glyphOn,
-                       texture2d<float> scene, texture2d<float> glyph, sampler smp, float2 res) {
-    float c = cos(-rot), s = sin(-rot);
+                       float darken, float tint, float glyphOn, float artOn, float artAspect,
+                       texture2d<float> scene, texture2d<float> glyph, texture2d<float> art, sampler smp, float2 res) {
     float2 dv = px - centre;
+    float reach = max(radius, halfLen) + 2.0;
+    if (dot(dv, dv) > reach * reach) return float4(0.0);       // most of the screen: skip the trig and the samples
+    float c = cos(-rot), s = sin(-rot);
     float2 l = float2(dv.x * c - dv.y * s, dv.x * s + dv.y * c) / max(radius, 0.5);
     float along = 0.0;
     if (halfLen > radius) {
@@ -357,14 +569,21 @@ static float4 glassOrb(float2 px, float2 centre, float radius, float halfLen, fl
     if (aa <= 0.001) return float4(0.0);
 
     float2 dir = r > 0.0001 ? l / r : float2(0.0);
-    float off = lensAt(r) * 2.0 - 0.5;                       // Aurora Orb: lensTable*2 - 0.5
+    float off = lensAt(r) * 2.0 - 0.5;
     float2 local = float2(dir.x * off, along + dir.y * off) * radius;
     float cr = cos(rot), sr = sin(rot);
     float2 sp = centre + float2(local.x * cr - local.y * sr, local.x * sr + local.y * cr);
     float3 bg = scene.sample(smp, sp / res).rgb;
     bg = mix(bg, bg * float3(0.30, 0.62, 1.0) + float3(0.02, 0.16, 0.38), tint);
 
-    // gloss: a soft highlight toward the top-left, a darker interior, a bright thin rim
+    if (artOn > 0.5) {
+        // the album cover sits in the orb (SoundObject.artwork), slightly magnified, refracted like the scene
+        float2 auv = float2(0.5 + 0.5 * l.x * 0.92 * off * 2.0, 0.5 + 0.5 * l.y * 0.92 * off * 2.0);
+        if (artAspect > 1.0) auv.x = 0.5 + (auv.x - 0.5) / artAspect; else if (artAspect > 0.0) auv.y = 0.5 + (auv.y - 0.5) * artAspect;
+        float3 ac = art.sample(smp, clamp(auv, 0.0, 1.0)).rgb;
+        bg = mix(bg, ac, 0.92 * (1.0 - smoothstep(0.86, 1.0, r)));
+    }
+
     float2 h = l - float2(-0.34, -0.42);
     float spec = exp(-dot(h, h) * 5.5);
     float3 col = bg * mix(1.0, 0.72, darken * (1.0 - smoothstep(0.7, 0.95, r)));
@@ -373,7 +592,7 @@ static float4 glassOrb(float2 px, float2 centre, float radius, float halfLen, fl
     col += float3(0.90, 0.98, 1.0) * rim * (0.35 + 1.05 * darken);
     col *= 1.0 - 0.18 * smoothstep(0.55, 1.0, r);
 
-    if (glyphOn > 0.5) {
+    if (glyphOn > 0.5 && artOn < 0.5) {
         float2 guv = float2(0.5 + 0.5 * l.x * 1.30, 0.5 + 0.5 * l.y * 1.30);
         float a = glyph.sample(smp, guv).a;
         col = mix(col, float3(1.0), a * 0.95);
@@ -391,15 +610,13 @@ fragment float4 overlayFragment(FSOut in [[stage_in]],
                                 constant float4 *rings      [[buffer(1)]],   // xy px, z active, w snapped
                                 texture2d<float> scene      [[texture(0)]],
                                 texture2d<float> glyph      [[texture(1)]],
+                                texture2d<float> art        [[texture(2)]],
                                 sampler smp                 [[sampler(0)]]) {
     float2 px = in.uv * O.res.xy;
     float3 col = scene.sample(smp, in.uv).rgb;
     float R = max(O.geom.x, 1.0);
-    float scale = max(R / 138.6, 0.5);         // px per point at the reference layout (R = 0.385 W)
+    float scale = max(R / 138.6, 0.5);
 
-    // --- glass orbs: a contact shadow, the handles (or the lift dot in classic mode), then the puck ---
-    // (the app's own shadow orb reaches 4.5 puck radii at 0.75 — over this renderer's brighter aura
-    //  that reads as a grey donut, so it is kept tight to the glass)
     float dsh = length(px - O.puck.xy) / max(O.geom.y * 2.0, 1.0);
     col = mix(col, float3(0.02, 0.08, 0.14), 0.40 * smoothstep(1.0, 0.30, dsh));
 
@@ -411,9 +628,9 @@ fragment float4 overlayFragment(FSOut in [[stage_in]],
         float gb = O.hB.z * (1.0 - smoothstep(0.0, 1.0, length(px - O.hB.xy) / (hr * 3.4)));
         float gn = O.nt.w * (1.0 - smoothstep(0.0, 1.0, length(px - O.nt.xy) / (max(O.ntSize.y, 1.0) * 2.7)));
         col = mix(col, float3(1.0), 0.28 * clamp(ga + gb + gn, 0.0, 1.0));
-        float4 a = glassOrb(px, O.hA.xy, hr, 0.0, 0.0, 0.35, 0.0, 0.0, scene, glyph, smp, O.res.xy);
-        float4 b = glassOrb(px, O.hB.xy, hr, 0.0, 0.0, 0.35, 0.0, 0.0, scene, glyph, smp, O.res.xy);
-        float4 nn = glassOrb(px, O.nt.xy, O.ntSize.x, O.ntSize.y, O.nt.z, 0.40, 0.0, 0.0, scene, glyph, smp, O.res.xy);
+        float4 a = glassOrb(px, O.hA.xy, hr, 0.0, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0, scene, glyph, art, smp, O.res.xy);
+        float4 b = glassOrb(px, O.hB.xy, hr, 0.0, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0, scene, glyph, art, smp, O.res.xy);
+        float4 nn = glassOrb(px, O.nt.xy, O.ntSize.x, O.ntSize.y, O.nt.z, 0.40, 0.0, 0.0, 0.0, 1.0, scene, glyph, art, smp, O.res.xy);
         col = mix(col, a.rgb, a.a * alpha);
         col = mix(col, b.rgb, b.a * alpha);
         col = mix(col, nn.rgb, nn.a * alpha);
@@ -421,13 +638,12 @@ fragment float4 overlayFragment(FSOut in [[stage_in]],
         float hr = max(O.geom.z * 0.85, 1.0);
         float gl = O.ntSize.z * (1.0 - smoothstep(0.0, 1.0, length(px - O.lift.xy) / (hr * 3.4)));
         col = mix(col, float3(1.0), 0.28 * gl);
-        float4 ld = glassOrb(px, O.lift.xy, hr, 0.0, 0.0, 0.50, 0.0, 0.0, scene, glyph, smp, O.res.xy);
+        float4 ld = glassOrb(px, O.lift.xy, hr, 0.0, 0.0, 0.50, 0.0, 0.0, 0.0, 1.0, scene, glyph, art, smp, O.res.xy);
         col = mix(col, ld.rgb, ld.a);
     }
-    float4 pk = glassOrb(px, O.puck.xy, O.geom.y, 0.0, 0.0, 0.25, 0.85, O.puck.z, scene, glyph, smp, O.res.xy);
+    float4 pk = glassOrb(px, O.puck.xy, O.geom.y, 0.0, 0.0, 0.25, 0.85, O.puck.z, O.art.x, O.art.y, scene, glyph, art, smp, O.res.xy);
     col = mix(col, pk.rgb, pk.a);
 
-    // --- speaker rings (the app's SnappingEllipse) ---
     int nr = int(O.flags.x);
     float rr = R * 0.085;
     for (int i = 0; i < nr && i < 8; i++) {
@@ -444,7 +660,6 @@ fragment float4 overlayFragment(FSOut in [[stage_in]],
         col = mix(col, float3(0.90, 0.95, 0.97), ringMask(px, O.flags.yz, 4.0 * scale, 1.2 * scale) * 0.45);
     }
 
-    // --- volume rim: 44 ticks over a 104-degree arc at the bottom, the current one longer ---
     if (O.ntSize.w > 0.5) {
         const float VH = 52.0 * M_PI_F / 180.0;
         float2 dv = px - O.res.zw;

@@ -56,10 +56,10 @@ class Ep(val agent: Agent?, val path: String, val every: Long = 6000, val timeou
         val a = agent ?: return
         try { data = a.get(path, timeout); error = null } catch (e: Exception) { error = e.message }
     }
-    fun fire(scope: CoroutineScope, p: String, body: Map<String, Any?> = emptyMap(), say: String? = null) {
+    fun fire(scope: CoroutineScope, p: String, body: Map<String, Any?> = emptyMap(), say: String? = null, timeoutSec: Long = 25) {
         scope.launch {
             busy = true
-            try { agent?.post(p, body, 25); error = null; if (say != null) note = say }
+            try { agent?.post(p, body, timeoutSec); error = null; if (say != null) note = say }
             catch (e: Exception) { error = e.message }
             busy = false
             load()
@@ -116,6 +116,7 @@ fun SetupScreen(room: Room) {
             SetupRow("LEDs", "Reactive modes, colour, the whole room or one speaker", Icons.Default.Lightbulb) { screen = "led" }
             SetupRow("Sound & controls", "Tone, the volume ceiling, the control ring", Icons.Default.Tune) { screen = "sound" }
             SetupRow("Group stream", "The speakers' shared buffer, and when the stream drops out", Icons.Default.GraphicEq) { screen = "stream" }
+            SetupRow("AirPlay & Atmos", "What's really playing, height channels, quick recovery", Icons.Default.Cast) { screen = "airplay" }
             SetupRow("Scenes", "Save the room, apply it, schedule it", Icons.Default.Theaters) { screen = "scenes" }
             SetupRow("Network", "Wi-Fi, radios, cell-to-cell link", Icons.Default.Wifi) { screen = "net" }
             SetupRow("Firmware", "What is flashed, install, roll back", Icons.Default.SystemUpdate) { screen = "fw" }
@@ -129,6 +130,7 @@ fun SetupScreen(room: Room) {
         "sound" -> SoundSetup(room) { screen = null }
         "scenes" -> ScenesSetup(room) { screen = null }
         "stream" -> StreamSetup(room) { screen = null }
+        "airplay" -> AirPlaySetup(room) { screen = null }
         "net" -> NetworkSetup(room) { screen = null }
         "fw" -> FirmwareSetup(room) { screen = null }
         "sys" -> SystemSetup(room) { screen = null }
@@ -789,8 +791,8 @@ fun SystemSetup(room: Room, onBack: () -> Unit) {
         }
         Card("Syng's cloud") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Pill("Block, room-wide", modifier = Modifier.weight(1f)) { cloud.fire(scope, "/api/cloudblock", mapOf("on" to true, "scope" to "group"), "Blocked") }
-                Pill("Unblock", modifier = Modifier.weight(1f)) { cloud.fire(scope, "/api/cloudblock", mapOf("on" to false, "scope" to "group"), "Unblocked") }
+                Pill("Block, room-wide", modifier = Modifier.weight(1f)) { cloud.fire(scope, "/api/cloudblock", mapOf("on" to true, "scope" to "group"), "Blocked", 60) }
+                Pill("Unblock", modifier = Modifier.weight(1f)) { cloud.fire(scope, "/api/cloudblock", mapOf("on" to false, "scope" to "group"), "Unblocked", 60) }
             }
             val cells = cloud.data.list("cells")
             if (cells.isNotEmpty()) Text("${cells.count { it.optBoolean("blocked") }} of ${cells.size} blocked", color = Theme.muted, fontSize = 12.sp)
@@ -919,6 +921,105 @@ private fun StackedBars(data: Array<FloatArray>, modifier: Modifier) {
                 val hh = v / mx * (h - 4f)
                 drawRect(UCOL[ci % UCOL.size], androidx.compose.ui.geometry.Offset(i * bw + 0.5f, y - hh), androidx.compose.ui.geometry.Size(max(1f, bw - 1f), hh))
                 y -= hh
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- AirPlay & Atmos
+
+/** What the AirPlay source really produces (Syng's badge says "Stereo" even during 12-channel Atmos); each speaker's height
+ *  layer (Syng lifts Atmos' height channels onto speakers marked high and turns height processing on itself); fill surround,
+ *  an experiment; and quick recovery. */
+@Composable
+fun AirPlaySetup(room: Room, onBack: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val ep = rememberEp(room.agent, "/api/airplay", 5000, 12)
+    val cells = ep.data.list("cells")
+    val mine = cells.firstOrNull()?.o("settings") ?: JSONObject()
+    var fill by remember { mutableStateOf(false) }
+    val layers = remember { mutableStateMapOf<String, Int>() }
+    var quick by remember { mutableStateOf(false) }
+    LaunchedEffect(mine.toString()) {
+        if (!ep.busy && mine.length() > 0) {
+            fill = mine.optBoolean("fill"); quick = mine.optBoolean("quick_recover")
+        }
+    }
+    val hlJson = ep.data.o("height_layers")
+    LaunchedEffect(hlJson.toString()) {
+        if (!ep.busy) hlJson.keys().forEach { k -> layers[k] = hlJson.optDouble(k, 0.0).roundToInt() }
+    }
+    fun speaker(serial: String) = cells.firstOrNull { it.optString("serial") == serial }?.optString("name")?.takeIf { it.isNotEmpty() } ?: "Cell " + serial.takeLast(5)
+    fun name(c: JSONObject) = c.optString("name").ifEmpty { "Cell " + c.optString("serial").takeLast(5) + c.optString("role").let { if (it.isEmpty()) "" else " ($it)" } }
+    fun send(k: String, v: Boolean, label: String) = ep.fire(scope, "/api/airplay", mapOf(k to v), label + (if (v) " on" else " off") + " — every speaker")
+
+    @Composable
+    fun SwitchRow(title: String, sub: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(title, fontSize = 14.sp)
+                Text(sub, color = Theme.muted, fontSize = 12.sp)
+            }
+            Switch(checked = checked, onCheckedChange = onChange,
+                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Theme.live))
+        }
+    }
+
+    Page("AirPlay & Atmos", ep, onBack) {
+        Card("Playing now") {
+            val playing = cells.filter { it.optBoolean("active") }
+            when {
+                cells.isEmpty() -> Text(if (ep.error != null) "n/a: ${ep.error}" else "Asking the speakers…", color = Theme.muted, fontSize = 12.sp)
+                playing.isEmpty() -> Text("Nothing is playing over AirPlay right now", color = Theme.muted, fontSize = 14.sp)
+                else -> playing.forEach { c ->
+                    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(c.optString("format").ifEmpty { "—" }, fontWeight = FontWeight.SemiBold, fontSize = 20.sp)
+                        Text("${c.optInt("channels")} ch", color = Theme.muted, fontSize = 12.sp)
+                    }
+                    val badge = c.optString("badge")
+                    if (badge.isNotEmpty() && badge != c.optString("format")) Text("Syng's badge says \u201C$badge\u201D", color = Theme.muted, fontSize = 12.sp)
+                    if (c.optString("layout").isNotEmpty()) Text(c.optString("layout"), color = Theme.muted, fontSize = 11.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                }
+            }
+        }
+        Card("Height") {
+            val hp = if (ep.data.has("height_processing") && !ep.data.isNull("height_processing")) ep.data.optBoolean("height_processing") else null
+            Text(when (hp) { null -> "Height processing: —"; true -> "Height processing on (set by Syng: a speaker is up high)"
+                             else -> "Height processing off (set by Syng: every speaker is on the floor layer)" }, fontSize = 14.sp)
+            Text("Atmos' four overhead channels always play. With every speaker on the floor layer they are spread around the ring at ear height; mark the speakers that sit up high and Syng lifts the height channels onto them, turning height processing on by itself.",
+                color = Theme.muted, fontSize = 12.sp)
+            layers.keys.sortedBy { speaker(it) }.forEach { serial ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(speaker(serial), fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    listOf(0 to "Floor", 1 to "High", 2 to "Ceiling").forEach { (v, label) ->
+                        Pill(label, filled = (layers[serial] ?: 0) == v) {
+                            layers[serial] = v
+                            ep.fire(scope, "/api/room/layout", mapOf("cells" to mapOf(serial to mapOf("height_layer" to v))), "Height layer saved")
+                        }
+                        Spacer(Modifier.width(4.dp))
+                    }
+                }
+            }
+        }
+        Card("Experiment") {
+            SwitchRow("Fill surround channels", "Syng's enableBeyondStereoDuplication — nothing in Syng's firmware or apps sets it", fill) { fill = it; send("fill", it, "Fill surround") }
+            Text("Applies to every speaker. Flip it while a surround or Atmos track plays and listen.", color = Theme.muted, fontSize = 12.sp)
+        }
+        Card("If AirPlay crashes") {
+            var n = 0; var last = 0.0
+            cells.forEach { c -> val x = c.o("quick_recover"); n += x.optInt("count"); last = max(last, x.optDouble("last", 0.0)) }
+            val line = if (n == 0) "Back in ~3 s instead of a 2-minute core dump" else "Recovered $n×" +
+                (if (last > 0) " · last " + java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date((last * 1000).toLong())) else "")
+            SwitchRow("Quick recovery", line, quick) { quick = it; send("quick_recover", it, "Quick recovery") }
+            Text("Syng's AirPlay receiver can crash as a spatial stream starts; it then spends minutes writing a 150 MB crash file before it restarts. This skips the file.",
+                color = Theme.muted, fontSize = 12.sp)
+        }
+        if (cells.isNotEmpty()) Card("Speakers") {
+            cells.forEach { c ->
+                val q = if (c.o("quick_recover").optBoolean("on")) "quick recovery on" else "quick recovery off"
+                val st = if (!c.has("height") || c.isNull("height")) "AirPlay runs on the primary · $q"
+                         else "height processing ${if (c.optBoolean("height")) "on" else "off"} · fill ${if (c.optBoolean("fill")) "on" else "off"} · $q"
+                Row { Text(name(c), fontSize = 14.sp, modifier = Modifier.weight(1f)); Text(st, color = Theme.muted, fontSize = 12.sp) }
             }
         }
     }

@@ -2,6 +2,156 @@
 
 Agent builds are numbered bNN; the published `agent/syng-agent.py` is the latest.
 
+## fw flushgate — review §1.1–1.5 follow-through — 2026-10-21
+Firmware (airplay2source) on the five Ball Room cells, not an agent build.
+
+- **Render snap backed off (§1.1):** `l0` → `snapfix` level (150 ms lead, 300 ms trigger). `l0` re-timed the
+  group ~1 s early at every track start and on any lost packet; tonight's "Too many samples to skew" bursts
+  coincided one-for-one with the sender's `seq 0` track-change flushes.
+- **Silent-wedge fix narrowed (§1.5):** `flushgate` leaves flush-pending unset for a `flushUntilSeq 0` flush
+  (flush now, nothing pending) instead of clearing a pending flush at every re-anchor. Builder:
+  `_local/re/airplay-silence-fix/flushgate/patch_flushgate.py`.
+- **ehguard actually loaded (§1.4)** by the restart; **busguard trace** running on the primary instead of
+  busguard (§1.3). HomePod notes corrected (§1.2).
+
+## b75 — an even viz stream, a steady band ring — 2026-10-21
+The band ring around the puck rendered at full frame rate but moved in fits: frames from `/api/viz/stream` reached the
+apps in clumps (a 100–900 ms gap, then several at once). Measured from a secondary while music played: 141 bunched
+arrivals and 28 gaps over 80 ms in 20 s.
+
+- **Agent**: the viz feed thread ran at nice +10 inside a −8 process next to −20 audio daemons and stalled 0.3–0.9 s
+  for a core on a busy primary; now −4 (still below the control threads). Frames are stamped with the kernel's
+  receive time (SO_TIMESTAMPNS) instead of when the thread got to them, the stream sends every frame since its last
+  write (a ~1 s ring) instead of only the newest, and the SSE socket has TCP_NODELAY. Source stamp gaps over 45 ms:
+  21 → 2 in 20 s; no frames skipped.
+- **Apps (iPhone, iPad, Apple TV)**: a small jitter buffer plays the frames out by their stamps plus an adaptive
+  delay (the network's recent 90th-percentile jitter, 20–150 ms; ~60–80 ms on Wi-Fi), so the ring and pulse field get
+  an even 30 Hz. Replaying the measured trace: bunched frames 141 → 14, long gaps 28 → 9. The band attack/release is
+  now scaled by frame time, so ProMotion (120 fps) and the TV (60) answer alike.
+
+## b74 — prefer the wire — 2026-10-21
+A speaker with Ethernet plugged in is now reached over the cable whenever it has one; its Wi-Fi address stays the
+fallback. (The Ball Room primary answers 3–15× faster on .174 wired than on .192 Wi-Fi.)
+
+- **Agent**: learns each cell's `wired_ip` (from whoami, the room doc, discovery and link sync) and sends cell-to-cell
+  calls and `/api/relay` there first, after a quick reachability check (cached 30 s); GETs fall back to the original
+  address, POSTs only when the wire refused the connection (never after a timeout, so nothing runs twice).
+  `/api/discover` rooms carry `primary_wired_ip`, `/api/room` cells carry `wired_ip`. Verified: relays from .138 to the
+  primary land on .174 only.
+- **Web page**: "open" and per-speaker links go to the wired address when there is one.
+- **Apps (iPhone, iPad, Apple TV, widgets)**: a room's agent is the primary's wired address with its Wi-Fi as the
+  fallback; per-speaker calls and "Open its page" use the wire too. A failed connection flips that speaker to the
+  other address for two minutes, and a GET's first try is cut to 3 s so a dead wire costs little. The widgets remember
+  both addresses; a room saved under its old Wi-Fi address is still recognised.
+
+## b73 — web ↔ iOS parity pass — 2026-10-21
+A full inventory of what the speaker's own page can do against the iOS app, then both brought level (Android deferred).
+
+- **Web page**: Flat button under the tone sliders; the real stream format leads the PLAYBACK badge (`format`, then
+  Syng's badging/mix/layout); **Leave this room** on your own room in ROOMS ON THIS NETWORK; **add to my room** on any
+  agent-running speaker in another room (relayed to that cell, which then joins this primary); Soundcheck's per-pair
+  distance / spread / reciprocity table and the reference cell under the status line.
+- **iOS (app build from the same date)**: now-playing progress + elapsed/total, transport buttons follow the source's
+  `controls`, Syng's badges + "via primary"; the Sound sheet gained the ceiling presets (the volume bar stops at the
+  ceiling), a numeric Spread slider, sleep presets with the live "off in N min", Height / Beyond-stereo flags and
+  Room correction with readiness and room noise; Speakers show live link state and what each is playing; Room setup
+  shows whoami badges, Create room, Move this speaker to another room, stock-firmware cells; LEDs got the "this
+  speaker" scope, Manual, the four reactive tuning sliders, animation play/pause/resume/clear and a JSON editor for
+  the visions; Network got hidden-network join, Forget any saved network, radio state with Ethernet off, static-IP
+  per service, link detail (wired interface, SyFi path, PTP delay, errors, log) with confirmations; Firmware reads
+  the agent's real fields (size, string agent/busy), Send to all speakers, last-install and room-step status, the
+  not-yet-committed flag; System shows the speaker's identity, CPU/memory sparklines, load, disks, uptime,
+  temperatures, faults, orientation, decoded eMMC health, per-cell cloud block with "this speaker", housekeeping
+  detail and Restart a service, the room document and the pre-agent restore; Layout edits the circle (sliders, 90°
+  turns, drag to pan, live preview), drags the listener, edits X/Y/Z, ceiling mount and height layer per speaker,
+  identifies in turn, draws the heard walls, saves only what changed and reports the fan-out; Scenes show their
+  contents and can be overwritten; scenes are polled every 30 s instead of every 2 s; query-string endpoints
+  (`/api/underruns?hours=168`) are no longer percent-encoded by the app.
+- Still web-only by design: the field tweaks debug panel, theme switch. Still iOS-only: Siri, widgets, the field
+  look menu (artwork colours, physics, puff, drift, fill the screen) — the web field is the older model.
+
+## b66 + cellbroker patch — truthful Atmos badge, quick-recovery default, offline height — 2026-10-18
+Our own fixes for the AirPlay issues reverse-engineered in `docs/SYNG-AIRPLAY-FIXES.md`. The deep in-binary causes
+(the crash, the badge-set site, the -6743 buffer reject) live inside Syng's stripped `airplay2source` with Apple's
+licensed AirPlay-2 SDK compiled in — those can only be truly fixed by Syng, and the FIXES doc hands them the
+patches. Everything below is what we can do from our side, deployed to the ballroom group (.226 .138 .30 .192 .44).
+
+- **#2 Truthful AirPlay badge (b66, on by default).** `AirPlay2Source` sets the `badgingType` property from a
+  sender CF property (default 0), not from the format, so Atmos badges as "Stereo" (enum: 1 Stereo, 2 Surround,
+  3 Spatial Audio, 7 Dolby Atmos). The agent's keeper now raises `badgingType` to match the negotiated channel
+  layout — Dolby Atmos (7) when the layout has height channels, Surround (2) for other multichannel — and only
+  corrects a plainly-wrong value (Unknown/Stereo/Undefined), never a correct or quality badge, never stereo/mono.
+  airplay2source rewrites it at each format change, so the keeper re-applies. Setting `airplay_badge_fix`,
+  `POST /api/airplay {"badge_fix": bool}`.
+- **#1 Quick AirPlay recovery now defaults on.** `LimitCORE=0` for airplay2source turns the ~2-minute core dump
+  after the format-change crash into a ~0.3 s restart. It does not stop the crash (that needs Syng wrapping the
+  stream-start D-Bus work in `catch (sdbus::Error)` and serialising the bus connection — FIXES doc #1); it caps
+  the cost. On every cell now (core_limit 0, drop-in present).
+- **#3 Offline height layer (cellbroker patch).** Reversing showed `cell_positions` (which drives
+  `have_height_cells` → `enable_height_processing` and the height shaders) only ever comes from the native
+  cloud-state observer, and stock `cell_set_height_layer` *only* publishes the change over MQTT — an offline room
+  never applies it. Two things: (a) confirmed live that the native honours a locally-set top-level `height_layer`,
+  so the agent's own layout path (`op_layout` → state push) already gives us offline per-speaker height that the
+  stock Syng app lacks; (b) patched `ProxyManager.cell_set_height_layer` to also apply locally — update our own
+  `cell_positions`, re-derive height processing and recompute object positions with the same calls
+  `set_room_state`/`set_cell_state` make — so the stock app's control works offline too. Additive: with no height
+  change requested, behaviour is identical to stock. `tools/patch_proxymanager.py`,
+  `overlay/.../cellbroker/ProxyManager.py`; each cell keeps `ProxyManager.py.prev.bak`.
+- Reverse-engineering write-up with the exact in-binary fixes for Syng: `docs/SYNG-AIRPLAY-FIXES.md`.
+
+## b65 + apps — unstick silent track changes — 2026-10-18
+- **Found the "silence between Apple Music tracks"**: when a sender moves to the next track inside the same buffered
+  stream (Apple Music on Apple TV / iPhone; HomePods in the same group carry on), Syng's receiver logs
+  `_bufProcessPacket err = -6743` (kSizeErr) and drops the stream. The source still says "playing" and the whole
+  group is silent until the sender flushes with a real sequence number: a second skip, or play after a pause.
+  Senders that tear the stream down between tracks recover in under a second. In airplay2source's journal on
+  every primary.
+- **"Unstick silent track changes"** (on by default): the agent follows airplay2source's journal. After a -6743 that
+  nothing clears, with the source still playing and its level below -70 dB (or no level at all) for 4 s, it sends
+  pause, then play: the same flush a skip causes, on the same track. Once per 45 s, a second try 8 s later, then it
+  stands down. Every event is counted (`GET /api/airplay` → `silence`). Switch in the AIRPLAY & ATMOS card and both
+  apps.
+- The viz feed keeps the source's absolute level (`rms_db`).
+
+## apps — Troubadour TV (Apple TV) — 2026-10-18
+- **An Apple TV app** (target `TroubadourTV`, tvOS 17, in the iOS project): a room picker, then the room's live,
+  music-reactive sound field full screen. Same `FieldModel`, Metal renderer and shaders as the phone. New
+  `FieldModel.readOnly`: it mirrors the room's real field (puck, width, aim, Spatial, LED colour) and never sends a
+  field or volume change. Siri Remote: ◀ ▶ rooms, click for what's playing (with the ATMOS badge), ⏯ play / pause,
+  Menu back. The screen saver is held off while a field shows.
+- Shared field code now builds for tvOS: the touch handling and haptics are compiled out there, as is the widget reload.
+
+## b64 + apps — height is Syng's, per speaker — 2026-10-18
+- **Removed b63's "Height channels" switch.** cellbroker owns `enableHeightProcessing`: it sets it to "does the room
+  have a speaker on a higher layer" whenever the room state changes. b63 forced it on every 15 s, so the two fought,
+  and turning it off never held. The agent no longer writes it, and drops the old setting.
+- **Height layer per speaker** in Setup → AirPlay & Atmos (web, iOS/iPadOS, Android): Floor / shelf, Up high,
+  Ceiling. Saved through the room layout on the primary, offline. Syng Studio's switch goes through the cloud. Mark a
+  speaker high and cellbroker lifts Atmos' height channels onto it and turns height processing on by itself. Height
+  processing is shown as Syng's status.
+- Atmos rendering, read from cellbroker's shaders: a 7.1.4 source gets 12 objects around the room. With every speaker
+  on the floor layer, the four height channels play from the floor ring at ±45°/±135°.
+- *Fill surround* stays, relabelled as an experiment (nothing in Syng's firmware or apps sets
+  `enableBeyondStereoDuplication`). Quick AirPlay recovery is unchanged.
+- docs/SYNG-AIRPLAY.md section 3 rewritten accordingly.
+
+## b63 + apps — AirPlay & Atmos — 2026-10-18
+- **Atmos over AirPlay does decode.** An Apple TV sending Dolby Atmos (APAC 7.1.4) reaches the speakers as 12 channels
+  (`L R C Lfe Lss Rss Tfl Tfr Trl Trr Lrs Rrs`). The "Missing Magic Cookie" warning at the start of a stream is only the
+  first format announcement, before the decoder config arrives a moment later.
+- **Two Atmos switches the speakers always had, now exposed** (stock: off; nothing ever set them, not even Syng's app):
+  *Height channels* (`enableHeightProcessing`) and *Fill surround channels* (`enableBeyondStereoDuplication`), writable
+  properties of the AirPlay source that syngsoundserver reads. The agent applies them to every speaker and re-applies
+  them when airplay2source restarts, writing only when the live value differs.
+- **Quick AirPlay recovery**: when airplay2source crashes (an uncaught `sdbus::Error` as a spatial stream starts —
+  see docs/HACKING.md) it used to spend 2+ minutes writing a 150 MB core dump with AirPlay gone. The switch sets
+  `LimitCORE=0` for it (a systemd drop-in + the running process), so a crash costs systemd's 3 s restart.
+- **What's really playing**: Syng's `badgingType` says "Stereo" even during Atmos. The agent derives a label from the
+  channel layout ("Dolby Atmos 7.1.4"), in `/api/state` sources (`format`) and `GET /api/airplay`.
+- `GET /api/airplay[/local]`, `POST /api/airplay {height, fill, quick_recover}` (every speaker on the network; `scope:
+  "room"` for one room). Setup page AIRPLAY & ATMOS card; iOS/iPadOS Setup → AirPlay & Atmos plus an ATMOS badge by
+  the track; Android the same.
+
 ## b62 + apps — group stream controls — 2026-10-18
 - **Network buffer control**: the room's SourceCast buffer (`maxNetworkLatency_ms`, stock 50 ms) per speaker, with a
   slider and *Apply to the room* (asks first; each speaker restarts its audio engine, sound mode and field restored;

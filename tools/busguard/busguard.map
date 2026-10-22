@@ -1,0 +1,10 @@
+LIBSYSTEMD_221 {
+  global:
+    sd_bus_process;
+    sd_bus_call;
+    sd_bus_call_async;
+    sd_bus_send;
+    sd_bus_flush;
+  local:
+    *;
+};

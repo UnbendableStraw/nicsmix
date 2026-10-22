@@ -26,6 +26,7 @@ struct SoundSettingsView: View {
     var body: some View {
         SetupPage(title: "Sound & controls", e: e) {
             Card("Tone") {
+                ToneCurve(bass: bass, tilt: tilt).frame(height: 66)
                 sliderRow("Lows", $bass) { send() }
                 sliderRow("Highs", $tilt) { send() }
                 HStack {
@@ -95,6 +96,31 @@ struct SoundSettingsView: View {
     }
 }
 
+/// The shape the two sliders make (the web page's `#tonecurve`): a low shelf and a high tilt around a flat middle.
+struct ToneCurve: View {
+    let bass: Double, tilt: Double
+    private func smooth(_ a: Double, _ b: Double, _ x: Double) -> Double {
+        let t = min(max((x - a) / (b - a), 0), 1); return t * t * (3 - 2 * t)
+    }
+    var body: some View {
+        Canvas { ctx, size in
+            let mid = size.height / 2
+            var base = Path(); base.move(to: CGPoint(x: 0, y: mid)); base.addLine(to: CGPoint(x: size.width, y: mid))
+            ctx.stroke(base, with: .color(Theme.surface2), lineWidth: 1)
+            var p = Path()
+            for i in 0...60 {
+                let x = Double(i) / 60
+                let g = bass * (1 - smooth(0.12, 0.5, x)) + tilt * smooth(0.5, 0.9, x)
+                let pt = CGPoint(x: x * size.width, y: mid - g * 24)
+                if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
+            }
+            ctx.stroke(p, with: .color(.white), style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+            ctx.draw(Text("LOWS").font(.system(size: 9)).foregroundColor(Theme.muted), at: CGPoint(x: 16, y: size.height - 8))
+            ctx.draw(Text("HIGHS").font(.system(size: 9)).foregroundColor(Theme.muted), at: CGPoint(x: size.width - 18, y: size.height - 8))
+        }
+    }
+}
+
 // MARK: - scenes
 
 /// Scenes are the room's settings under a name — sources, volume, sound mode, LEDs, the field.
@@ -154,17 +180,31 @@ struct ScenesView: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(name).font(.subheadline.weight(.semibold))
-                Text(scheduleLabel(body)).font(.caption).foregroundStyle(Theme.muted)
+                Text(scheduleLabel(body) + (e.data.str("last") == name ? " · last applied" : "")).font(.caption).foregroundStyle(Theme.muted)
+                let d = describe(body)
+                if !d.isEmpty { Text(d).font(.caption2).foregroundStyle(Theme.muted).lineLimit(1) }
             }
             Spacer()
             Button("Apply") { e.fire("/api/scenes/apply", ["name": name], note: "Applied \(name)") }
                 .buttonStyle(Chip(filled: e.data.str("last") == name))
             Menu {
                 Button("Schedule…") { load(body); scheduling = name }
+                Button("Overwrite with the room as it is now") { e.fire("/api/scenes/save", ["name": name], note: "Updated \(name)") }
                 Button("Delete", role: .destructive) { e.fire("/api/scenes/delete", ["name": name], note: "Deleted \(name)") }
             } label: { Image(systemName: "ellipsis.circle").foregroundStyle(Theme.muted) }
         }
         .padding(.vertical, 3)
+    }
+
+    /// What the scene holds, the way the web page lists it: vol 40 · tone 10/-5 · spatial · LED pulse · limit 70%.
+    private func describe(_ sc: [String: Any]) -> String {
+        var parts: [String] = []
+        if let v = sc.num("volume") { parts.append("vol \(Int((v * 100).rounded()))") }
+        if let t = sc["tone"] as? [String: Any] { parts.append("tone \(Int(((t.num("bass") ?? 0) * 100).rounded()))/\(Int(((t.num("tilt") ?? 0) * 100).rounded()))") }
+        if let f = sc["field"] as? [String: Any] { parts.append(f.flag("spatial") ? "spatial" : "classic") }
+        if let l = sc["led"] as? [String: Any], let m = l.str("mode") { parts.append("LED \(m)") }
+        if let lim = sc.int("volume_limit"), lim > 0 { parts.append("limit \(lim)%") }
+        return parts.joined(separator: " · ")
     }
 
     private func scheduleLabel(_ body: [String: Any]) -> String {

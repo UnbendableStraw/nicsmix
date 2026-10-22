@@ -33,3 +33,15 @@ _local/
 build-*/
 publish/
 LOCAL-NOTES.md
+
+# 2026-10-21: per-build agent copies and editor/runtime backups anywhere (the agent itself is published)
+agent/build/syng-agent-b*.py
+*.bak
+*.err
+_wtest/
+# compiled shims are rebuilt by tools/*/build.sh; keep the sources, not the binaries
+tools/busguard/*.so
+tools/ehguard/*.so
+# captures / scratch json from live cells
+_local/
+*.wav

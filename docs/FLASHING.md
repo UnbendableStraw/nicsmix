@@ -58,10 +58,12 @@ fail to install the helper. Method A avoids all of that.
 ## SSH details
 - `sshd` (OpenSSH) is already on the image, socket-activated on :22; it was only
   gated by auth + the dev `sshd_config`. The overlay sets (both slots):
-  `PermitRootLogin yes`, `PasswordAuthentication yes`, `PubkeyAuthentication yes`,
-  `PermitEmptyPasswords no`, and
+  `PubkeyAuthentication yes`, `PermitEmptyPasswords no`, and (key-only builds)
+  `PermitRootLogin prohibit-password` / `PasswordAuthentication no`, and
   `AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u`.
-- Root password set to **`SyngCell.dev`** (SHA-512) — **change it on first login**.
+- Root auth (§1.9): **key-only** when the build found an SSH key (password login off, root
+  password locked); otherwise `ROOT_PASSWORD` if you set one, else a **random password the
+  build prints once**. No shared default password is baked in any more.
 - Host key is generated into `/data/ssh/` on first boot (expect a one-time
   host-key prompt).
 - `otamanager.service` is masked (`→ /dev/null`) so a cloud update can't silently
@@ -69,7 +71,7 @@ fail to install the helper. Method A avoids all of that.
   `systemctl unmask otamanager`.
 
 ```sh
-ssh root@<cell-ip>         # password: SyngCell.dev
+ssh root@<cell-ip>         # key-only, or the password the build printed / you set
 passwd                     # change it
 printf '%s\n' 'ssh-ed25519 AAAA... you' >> /etc/ssh/authorized_keys.d/root
 ```

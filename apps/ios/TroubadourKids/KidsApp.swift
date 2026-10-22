@@ -217,7 +217,7 @@ final class KidsVolume: ObservableObject {
     @Published private(set) var shown = 0.0          // 0..1 along the slider (= volume / cap)
     private var timer: Timer?
     private var dragging = false
-    private var lastSend = Date.distantPast
+    private let sender = LatestSender(minGap: 0.1)   // one request in flight, newest value wins, release lands last
 
     init(agent: Agent?) { self.agent = agent }
 
@@ -235,13 +235,12 @@ final class KidsVolume: ObservableObject {
         }
     }
 
-    /// From the slider: moved by the finger only (it never jumps), sent ~12 times a second while dragging.
+    /// From the slider: moved by the finger only (it never jumps). Latest-wins, one request in flight — a wiggled
+    /// slider no longer floods the speakers with hundreds of posts (2026-10-21: ~300 in 90 s while music played).
     func set(_ s: Double, final: Bool) {
         dragging = !final
         shown = min(1, max(0, s))
-        guard final || Date().timeIntervalSince(lastSend) > 0.08 else { return }
-        lastSend = Date()
         let v = (shown * Self.cap * 1000).rounded() / 1000
-        Task { [agent] in try? await agent?.post("/api/volume", ["source": "all", "volume": v], timeout: 4) }
+        sender.submit(["source": "all", "volume": v]) { [agent] b in _ = try? await agent?.post("/api/volume", b, timeout: 4) }
     }
 }
